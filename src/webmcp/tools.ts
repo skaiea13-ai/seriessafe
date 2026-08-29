@@ -191,6 +191,8 @@ export function doCommit(): string {
     after: state.staged.safe,
     at: Date.now(),
     summary: `${g.summary}: ${state.staged.plan.oldRuleText} → ${state.staged.plan.newRuleText}`,
+    validation: state.validation!,
+    preserved: state.staged.plan.naiveLosses.length,
   };
   state.calendar = state.staged.safe;
   state.uids = listRecurringUids(state.calendar);

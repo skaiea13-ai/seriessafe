@@ -18,6 +18,10 @@ export interface CommitRecord {
   after: Component;
   at: number;
   summary: string;
+  /** Kept so the evidence stays on screen after committing. */
+  validation: ValidationReport;
+  /** How many items a conventional edit would have destroyed. */
+  preserved: number;
 }
 
 export interface AppState {
@@ -56,11 +60,37 @@ export function subscribe(fn: Listener): () => void {
   return () => listeners.delete(fn);
 }
 
+let queued = false;
+
+/**
+ * Coalesce notifications into a single render at the end of the current task.
+ *
+ * A microtask is used rather than `requestAnimationFrame` on purpose: an agent
+ * may drive this page while it is in a background tab, where rAF is throttled
+ * or never fires at all. Batching still collapses the several state changes a
+ * single tool call makes into one render.
+ */
 export function notify(): void {
+  if (queued) return;
+  queued = true;
+  queueMicrotask(() => {
+    queued = false;
+    for (const fn of listeners) fn();
+  });
+}
+
+/** Render immediately, without waiting for the microtask queue to drain. */
+export function notifySync(): void {
+  queued = false;
   for (const fn of listeners) fn();
 }
 
-export function logCall(tool: string, detail: string, ok = true, actor: 'agent' | 'user' = 'agent'): void {
+export function logCall(
+  tool: string,
+  detail: string,
+  ok = true,
+  actor: 'agent' | 'user' = 'agent',
+): void {
   state.log.push({ at: Date.now(), actor, tool, detail, ok });
   if (state.log.length > 200) state.log.shift();
   notify();

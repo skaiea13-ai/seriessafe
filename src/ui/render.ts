@@ -72,6 +72,7 @@ function loadCard(): string {
       <button data-act="pick">Open an .ics file…</button>
       <input type="file" id="file" accept=".ics,text/calendar" hidden />
     </div>
+    <p class="kbd-hint" style="margin-top:12px">In a hurry? Use <strong>“Watch an agent do it”</strong> below — it runs the whole eight-call sequence for you.</p>
     <p class="kbd-hint">The sample mirrors a real Google export: folded lines, a VTIMEZONE block, multi-value EXDATE, an RDATE, three detached overrides, alarms and private X- properties.</p>
   </div>`;
 }
@@ -273,8 +274,9 @@ function comparisonCard(): string {
 }
 
 function validationCard(): string {
-  const v = state.validation;
+  const v = state.validation ?? state.commit?.validation ?? null;
   if (!v) return '';
+  const committed = !state.validation && !!state.commit;
   const rows = v.checks
     .map(
       (c) => `<div class="check ${c.pass ? 'pass' : 'fail'}">
@@ -288,11 +290,15 @@ function validationCard(): string {
     <h2>Proof</h2>
     <p class="hint">Checked against the serialized <code>.ics</code> bytes, not the in-memory plan — so a bug in the writer cannot slip through.</p>
     ${rows}
-    <div class="row" style="margin-top:16px">
+    ${
+      committed
+        ? ''
+        : `<div class="row" style="margin-top:16px">
       <button class="primary" data-act="commit" ${v.pass ? '' : 'disabled'}>
         ${v.pass ? 'Commit the change' : 'Commit locked — checks failed'}
       </button>
-    </div>
+    </div>`
+    }
   </div>`;
 }
 
@@ -301,7 +307,7 @@ function committedCard(): string {
   return `
   <div class="card">
     <h2>Committed</h2>
-    <p class="hint">${esc(state.commit.summary)}</p>
+    <p class="hint"><strong style="color:var(--keep)">${state.commit.preserved} item(s) that a conventional edit would have destroyed are still there.</strong><br />${esc(state.commit.summary)}</p>
     <div class="row">
       <button data-act="export-current" class="primary">Download the updated .ics</button>
       <button data-act="undo" class="danger">Undo</button>
@@ -370,7 +376,7 @@ export function render(): void {
       <div>
         ${loadCard()}
         ${timelineCard()}
-        ${state.calendar ? agentCard() : ''}
+        ${agentCard()}
       </div>
       <div>
         ${requestCard()}

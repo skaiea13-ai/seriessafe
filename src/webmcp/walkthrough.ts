@@ -51,7 +51,7 @@ export async function runWalkthrough(announce: () => void): Promise<void> {
       state.walkthrough = { index: i, total: WALKTHROUGH.length, tool: step.tool, why: step.why, done: false };
       announce();
       // Let the narration paint before the call runs.
-      await new Promise((r) => setTimeout(r, 620));
+      await new Promise((r) => setTimeout(r, 430));
 
       const names: string[] = (await mc.getTools()).map((t: any) => t.name);
       if (!names.includes(step.tool)) {
@@ -59,7 +59,7 @@ export async function runWalkthrough(announce: () => void): Promise<void> {
         throw new Error(`"${step.tool}" is not registered yet.`);
       }
       await mc.executeTool(step.tool, step.args ?? {});
-      await new Promise((r) => setTimeout(r, 260));
+      await new Promise((r) => setTimeout(r, 170));
     }
     state.walkthrough = {
       index: WALKTHROUGH.length - 1,

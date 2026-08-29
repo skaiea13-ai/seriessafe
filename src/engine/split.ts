@@ -379,21 +379,29 @@ function describeLoss(occ: Occurrence, graph: SeriesGraph): LossEntry {
   };
 }
 
+const humanFmt = new Map<string, Intl.DateTimeFormat>();
+
 export function formatHuman(ms: number, tzid?: string): string {
-  try {
-    return new Intl.DateTimeFormat('en-GB', {
-      timeZone: tzid && tzid.length ? tzid : 'UTC',
-      weekday: 'short',
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(new Date(ms));
-  } catch {
-    return new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
+  const zone = tzid && tzid.length ? tzid : 'UTC';
+  let fmt = humanFmt.get(zone);
+  if (!fmt) {
+    try {
+      fmt = new Intl.DateTimeFormat('en-GB', {
+        timeZone: zone,
+        weekday: 'short',
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+    } catch {
+      return new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
+    }
+    humanFmt.set(zone, fmt);
   }
+  return fmt.format(new Date(ms));
 }
 
 export { cloneComponent, setProp, removeProps };
