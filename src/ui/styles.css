@@ -5,6 +5,9 @@
 /* ------------------------------------------------------------------ */
 
 :root {
+  /* Let scrollbars, date pickers and other native widgets follow the theme. */
+  color-scheme: light dark;
+
   --bg: #0b0e13;
   --bg-raised: #141922;
   --bg-sunken: #080a0e;
@@ -135,7 +138,12 @@ input:focus, select:focus, button:focus-visible {
 
 /* ---- timeline ----------------------------------------------------- */
 
-.timeline { max-height: 420px; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+.timeline { max-height: 420px; overflow-y: auto; overscroll-behavior: contain; margin: 0 -6px; padding: 0 6px; }
+.timeline::-webkit-scrollbar { width: 10px; }
+.timeline::-webkit-scrollbar-track { background: transparent; }
+.timeline::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; }
+.timeline::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+.log { scrollbar-width: thin; }
 .occ {
   display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center;
   padding: 7px 10px; border-radius: 7px; border: 1px solid transparent;

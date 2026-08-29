@@ -6,7 +6,7 @@ import {
   getParam,
 
 } from '../ics/types.ts';
-import { parseDateTime, formatDateTime, unescapeText, isKnownTimeZone } from '../ics/parse.ts';
+import { parseDateTime, unescapeText, isKnownTimeZone } from '../ics/parse.ts';
 import { parseRRule, expandRRule, type RRule } from './rrule.ts';
 
 /** How an occurrence differs from the bare recurrence pattern. */
@@ -246,5 +246,3 @@ export function listRecurringUids(cal: Component): string[] {
   }
   return [...uids];
 }
-
-export { formatDateTime };

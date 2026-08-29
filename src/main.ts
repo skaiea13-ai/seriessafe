@@ -6,7 +6,6 @@ import { installHarnessIfAbsent, usingHarness } from './webmcp/harness.ts';
 import { runWalkthrough } from './webmcp/walkthrough.ts';
 import {
   registerSeriesSafeTools,
-  webmcpAvailable,
   doLoadCalendar,
   doSelectSeries,
   doStage,
@@ -173,18 +172,15 @@ subscribe(render);
 
 // Register against the browser's own WebMCP when it has one, and otherwise
 // against a local stand-in so the tool layer is still exercisable.
-const installed = installHarnessIfAbsent();
+installHarnessIfAbsent();
 render();
 
 registerSeriesSafeTools().then((registered) => {
-  if (registered) {
-    logCall(
-      'modelContext',
-      `9 tools registered via ${usingHarness() ? 'the local harness' : 'the browser WebMCP API'}; ` +
-        'commit and undo appear only once they are safe',
-      true,
-    );
-  }
-  void installed;
-  void webmcpAvailable;
+  if (!registered) return;
+  logCall(
+    'modelContext',
+    `9 tools registered via ${usingHarness() ? 'the local harness' : 'the browser WebMCP API'}; ` +
+      'commit and undo appear only once they are safe',
+    true,
+  );
 });

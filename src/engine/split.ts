@@ -1,4 +1,4 @@
-import { getProp, getProps, getParam, cloneComponent, setProp, removeProps } from '../ics/types.ts';
+import { getProp, getProps, getParam } from '../ics/types.ts';
 import { formatDateTime, parseDateTime } from '../ics/parse.ts';
 import { expandRRule, formatRRule, type RRule } from './rrule.ts';
 import { PRESERVED_PROPS, type SeriesGraph, type Occurrence } from './series.ts';
@@ -318,13 +318,9 @@ export function applyTimeOfDay(ms: number, hhmm: string, tzid?: string): number 
   const hh = +m[1];
   const mm = +m[2];
   if (hh > 23 || mm > 59) return null;
-  const iso = formatDateTime(ms, { tzid, isDate: true });
-  const y = +iso.slice(0, 4);
-  const mo = +iso.slice(4, 6) - 1;
-  const d = +iso.slice(6, 8);
-  const literal = `${iso}T${String(hh).padStart(2, '0')}${String(mm).padStart(2, '0')}00`;
+  const day = formatDateTime(ms, { tzid, isDate: true });
+  const literal = `${day}T${String(hh).padStart(2, '0')}${String(mm).padStart(2, '0')}00`;
   const parsed = parseDateTime(literal, tzid);
-  void y; void mo; void d;
   return parsed ? parsed.ms : null;
 }
 
@@ -403,5 +399,3 @@ export function formatHuman(ms: number, tzid?: string): string {
   }
   return fmt.format(new Date(ms));
 }
-
-export { cloneComponent, setProp, removeProps };

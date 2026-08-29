@@ -78,8 +78,6 @@ function loadCard(): string {
 }
 
 function shortName(uid: string): string {
-  const g = state.calendar ? uid : uid;
-  void g;
   return uid.split('@')[0].replace(/-seriessafe-\d+$/, ' (moved)');
 }
 

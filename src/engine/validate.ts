@@ -1,4 +1,4 @@
-import { type Component, getProp, getProps, getParam } from '../ics/types.ts';
+import { type Component, getProp, getParam } from '../ics/types.ts';
 import { parseIcs, formatDateTime } from '../ics/parse.ts';
 import { serializeIcs } from '../ics/serialize.ts';
 import { buildSeriesGraph, type SeriesGraph } from './series.ts';
@@ -279,5 +279,3 @@ export function validateStage(
   const pass = checks.every((c) => c.pass);
   return { pass, checks, preservedCount: plan.naiveLosses.length, checkedAt: Date.now() };
 }
-
-export { getProps };
