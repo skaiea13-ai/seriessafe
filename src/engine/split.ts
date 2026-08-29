@@ -130,6 +130,29 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
   const past = graph.occurrences.filter((o) => o.slotMs < effectiveFromMs);
   const future = graph.occurrences.filter((o) => o.slotMs >= effectiveFromMs);
 
+  /*
+   * An override whose RECURRENCE-ID matches no slot of the current rule has no
+   * ordinal, so it cannot be re-anchored. Left alone it stays attached to the
+   * old series, which this operation is about to truncate — stranding it after
+   * the series has ended. Refuse rather than warn.
+   */
+  const slotSet = new Set(graph.occurrences.map((o) => o.slotMs));
+  const orphansAfter = [...graph.overrides.keys()].filter(
+    (ms) => !slotSet.has(ms) && ms >= effectiveFromMs,
+  );
+  if (orphansAfter.length) {
+    refusals.push({
+      code: 'ORPHAN_OVERRIDE',
+      message:
+        `${orphansAfter.length} customised occurrence(s) — the first on ` +
+        `${formatHuman(orphansAfter[0], graph.tzid)} — are attached to a date the recurrence rule does ` +
+        'not produce, so they have no position to carry across.',
+      remedy:
+        'Reattach those occurrences to a date the rule generates, or convert them into separate events, ' +
+        'then retry.',
+    });
+  }
+
   if (future.length === 0) {
     refusals.push({
       code: 'NOTHING_AFTER_DATE',
@@ -151,6 +174,37 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
   // ---- build the new rule -------------------------------------------
   const endPolicy = params.endPolicy ?? 'preserve-count';
   const neededCount = future.filter((o) => o.kind !== 'extra').length;
+
+  /*
+   * Ordinal alignment carries an exception from the Nth remaining old slot to
+   * the Nth new slot. That preserves the *week* an exception belongs to only
+   * while both rules produce the same number of slots per period. Going from
+   * two days a week to three makes slot #6 land a week early, quietly
+   * cancelling the wrong class — so the cadence must not change.
+   */
+  const oldDaysPerWeek = graph.rule.byday.length || 1;
+  const newDaysPerWeek = (params.byday && params.byday.length ? params.byday : graph.rule.byday).length || 1;
+  if (oldDaysPerWeek !== newDaysPerWeek) {
+    refusals.push({
+      code: 'CADENCE_CHANGED',
+      message:
+        `The series meets ${oldDaysPerWeek} time(s) per period and the new rule would meet ` +
+        `${newDaysPerWeek} time(s). Exceptions are anchored by position, so they can no longer be ` +
+        'matched to the right week.',
+      remedy:
+        'Keep the same number of days per period when moving the series, then add or remove days as a ' +
+        'separate change.',
+    });
+  }
+  if (params.interval !== undefined && params.interval !== graph.rule.interval) {
+    refusals.push({
+      code: 'CADENCE_CHANGED',
+      message:
+        `Changing the interval from ${graph.rule.interval} to ${params.interval} shifts every position ` +
+        'onto a different week, so existing exceptions cannot be re-anchored safely.',
+      remedy: 'Move the series first, then change the interval as a separate change.',
+    });
+  }
 
   const newRule: RRule = {
     ...graph.rule,

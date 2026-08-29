@@ -289,3 +289,86 @@ test('a same-weekday time change keeps the end date exactly', () => {
   const moved = resolve(plan.newUid, events).filter((o) => !/2026-11-11/.test(kstDate(o.slotMs)));
   for (const o of moved) assert.equal(kstTime(o.slotMs), '20:00', 'new time applied to every slot');
 });
+
+/* ------------------------------------------------------------------ */
+/* Regressions from the cross-validation pass.                         */
+/* Each of these once produced a wrong result, or a silent loss, while */
+/* all eight invariants reported success.                              */
+/* ------------------------------------------------------------------ */
+
+test('changing how often the series meets is refused, not mis-anchored', () => {
+  // Ordinal alignment maps the Nth old slot to the Nth new slot. That keeps an
+  // exception in its own week only while both rules meet the same number of
+  // times per period. Two days a week becoming three put a cancellation a full
+  // week early — cancelling the wrong class — and still passed validation.
+  const twoDays = SRC
+    .replace('RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261229T100000Z',
+             'RRULE:FREQ=WEEKLY;BYDAY=TU,TH;UNTIL=20261229T100000Z');
+  const { g } = graphOf(twoDays);
+
+  const widened = simulateSplit(g, { effectiveFromMs: EFFECTIVE, byday: ['MO', 'WE', 'FR'] });
+  assert.ok(!widened.ok);
+  assert.ok(widened.refusals.some((r) => r.code === 'CADENCE_CHANGED'),
+    `expected CADENCE_CHANGED, got ${widened.refusals.map((r) => r.code).join(',')}`);
+
+  // Same count of days is still allowed: that is the operation this app is for.
+  const sameCount = simulateSplit(g, { effectiveFromMs: EFFECTIVE, byday: ['MO', 'WE'] });
+  assert.ok(sameCount.ok, JSON.stringify(sameCount.refusals));
+
+  // Changing the interval moves every position onto a different week.
+  const { g: g1 } = graphOf(SRC);
+  const retimed = simulateSplit(g1, { effectiveFromMs: EFFECTIVE, byday: ['TH'], interval: 2 });
+  assert.ok(!retimed.ok);
+  assert.ok(retimed.refusals.some((r) => r.code === 'CADENCE_CHANGED'));
+});
+
+test('an override anchored off-pattern is refused rather than stranded', () => {
+  // A RECURRENCE-ID the rule never generates has no ordinal. Left alone it
+  // stayed on the old series, which the split then truncated to a date before
+  // it — silently orphaning it, with every invariant still green.
+  const orphaned = SRC.replace(
+    'RECURRENCE-ID;TZID=Asia/Seoul:20261020T190000',
+    'RECURRENCE-ID;TZID=Asia/Seoul:20261021T190000',   // a Wednesday: not a TU slot
+  );
+  const { g } = graphOf(orphaned);
+  assert.ok(g.warnings.some((w) => /not a slot/.test(w)), 'the graph still notices it');
+
+  const plan = simulateSplit(g, { effectiveFromMs: EFFECTIVE, byday: ['TH'] });
+  assert.ok(!plan.ok);
+  assert.ok(plan.refusals.some((r) => r.code === 'ORPHAN_OVERRIDE'),
+    `expected ORPHAN_OVERRIDE, got ${plan.refusals.map((r) => r.code).join(',')}`);
+
+  // An orphan safely in the past does not block the operation.
+  const pastOrphan = SRC.replace(
+    'RECURRENCE-ID;TZID=Asia/Seoul:20260407T190000',
+    'RECURRENCE-ID;TZID=Asia/Seoul:20260408T190000',
+  );
+  const { g: g2 } = graphOf(pastOrphan);
+  const ok = simulateSplit(g2, { effectiveFromMs: EFFECTIVE, byday: ['TH'] });
+  assert.ok(ok.ok, JSON.stringify(ok.refusals));
+});
+
+test('a past occurrence losing a property is caught, not just a moved one', () => {
+  // past-immutable compared only instants, so an override that kept its date
+  // but lost its room, its guests or its alarm passed unnoticed.
+  const { cal, g } = graphOf(SRC);
+  const plan = simulateSplit(g, { effectiveFromMs: EFFECTIVE, byday: ['TH'] });
+  assert.ok(plan.ok);
+
+  const clean = applySplit(cal, g, plan).calendar;
+  assert.ok(validateStage(cal, clean, g, plan).pass, 'the honest result still passes');
+
+  // Strip the April room-swap override of its location and its X- property.
+  const damaged = applySplit(cal, g, plan).calendar;
+  const victim = damaged.children.find(
+    (c) => c.name === 'VEVENT' && c.props.some((p) => p.name === 'RECURRENCE-ID' && p.value === '20260407T190000'),
+  );
+  assert.ok(victim, 'the past override is in the output');
+  victim!.props = victim!.props.filter((p) => p.name !== 'LOCATION' && p.name !== 'X-SCHOOL-ROOM-SWAP');
+
+  const report = validateStage(cal, damaged, g, plan);
+  assert.ok(!report.pass, 'a stripped past override must fail validation');
+  const check = report.checks.find((c) => c.id === 'past-immutable')!;
+  assert.ok(!check.pass);
+  assert.match(check.evidence, /altered/);
+});

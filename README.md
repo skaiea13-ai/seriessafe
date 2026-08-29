@@ -82,6 +82,8 @@ Staging is refused, with a remedy, when SeriesSafe cannot prove the outcome:
 | `MULTIPLE_RRULE` | More than one `RRULE` on the master. |
 | `RANGE_THISANDFUTURE` | An override that applies forward cannot be re-anchored safely. |
 | `ORDINAL_OUT_OF_RANGE` | The new rule has no slot to carry a given exception. |
+| `CADENCE_CHANGED` | The new rule meets a different number of times per period, so positions no longer line up with weeks. |
+| `ORPHAN_OVERRIDE` | A customised occurrence is anchored to a date the rule never generates, so it has no position to carry. |
 | `END_DATE_DROPS_MEETINGS` | Holding the old end date would quietly cost a meeting. |
 | `NOTHING_AFTER_DATE` / `NOTHING_BEFORE_DATE` | There is no split to make. |
 
@@ -98,7 +100,7 @@ Our own validator caught this during development. It is now a regression test.
 
 Checked after a round-trip through `.ics` text, so a bug in the writer cannot slip past:
 
-1. Every occurrence before the effective date is unchanged.
+1. Every occurrence before the effective date is unchanged — in timing **and** in content, down to each past override's own properties and alarms.
 2. The original series produces nothing on or after the effective date.
 3. Cancelled dates are still cancelled after the move.
 4. Moved and customised occurrences survive, exactly once, at their own time.
@@ -137,11 +139,11 @@ Both themes currently report zero contrast failures, no touch target under 24px,
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
-Twenty tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+Twenty-three tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
 
 ```bash
 npm install
-npm test           # 20 unit and integration tests
+npm test           # 23 unit and integration tests
 npm run test:webmcp   # 34 checks against real Chrome WebMCP (macOS Chrome 149+)
 npm run dev
 ```

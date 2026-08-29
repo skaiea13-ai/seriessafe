@@ -78,20 +78,70 @@ export function validateStage(
 
   const fmt = (ms: number) => formatHuman(ms, tz);
 
-  // 1. Nothing before the effective date moved.
+  // 1. Nothing before the effective date moved — in timing *or* in content.
   {
     const pastBefore = origBefore.filter((o) => o.slotMs < effective);
     const pastAfter = oldAfter.filter((o) => o.slotMs < effective);
-    const same =
+    const timingSame =
       pastBefore.length === pastAfter.length &&
       pastBefore.every((o, i) => o.slotMs === pastAfter[i].slotMs && o.startMs === pastAfter[i].startMs);
+
+    /*
+     * Matching instants is not enough: a past override could keep its date and
+     * still be stripped of its room, its guests or its alarm. Compare the full
+     * property fingerprint of every override that stays behind, and the
+     * carried properties of the truncated master.
+     */
+    const pastOverrideIds = [...before.overrides.keys()].filter((ms) => ms < effective);
+    const fingerprintOf = (cal: Component, uid: string, ridValue: string): string | null => {
+      const ev = cal.children.find(
+        (c) =>
+          c.name === 'VEVENT' &&
+          (getProp(c, 'UID')?.value ?? '') === uid &&
+          getProp(c, 'RECURRENCE-ID')?.value === ridValue,
+      );
+      return ev ? propFingerprint(ev) : null;
+    };
+    const contentProblems: string[] = [];
+    for (const ms of pastOverrideIds) {
+      const src = before.overrides.get(ms)!;
+      const rid = getProp(src, 'RECURRENCE-ID')!.value;
+      const a = fingerprintOf(original, before.uid, rid);
+      const b = fingerprintOf(reparsed, before.uid, rid);
+      if (b === null) contentProblems.push(`the ${fmt(ms)} override is gone`);
+      else if (a !== b) contentProblems.push(`the ${fmt(ms)} override was altered`);
+    }
+    // The master is deliberately re-written (UNTIL, EXDATE, SEQUENCE), so only
+    // the properties that carry user intent are compared.
+    const oldMasterAfter = reparsed.children.find(
+      (c) => c.name === 'VEVENT' && (getProp(c, 'UID')?.value ?? '') === before.uid && !getProp(c, 'RECURRENCE-ID'),
+    );
+    const REWRITTEN = ['RRULE', 'EXDATE', 'RDATE', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'];
+    if (!oldMasterAfter) contentProblems.push('the original series master is gone');
+    else {
+      for (const p of before.master.props) {
+        if (REWRITTEN.includes(p.name)) continue;
+        if (!oldMasterAfter.props.some((q) => q.name === p.name && q.value === p.value)) {
+          contentProblems.push(`${p.name} lost from the original series`);
+        }
+      }
+      const alarmsA = before.master.children.filter((c) => c.name === 'VALARM').length;
+      const alarmsB = oldMasterAfter.children.filter((c) => c.name === 'VALARM').length;
+      if (alarmsA !== alarmsB) contentProblems.push('the original series lost an alarm');
+    }
+
+    const same = timingSame && contentProblems.length === 0;
     checks.push({
       id: 'past-immutable',
       title: 'Every occurrence before the effective date is unchanged',
       pass: same,
-      evidence: same
-        ? `${pastBefore.length} past occurrences match exactly, from ${fmt(pastBefore[0]?.slotMs ?? 0)} to ${fmt(pastBefore[pastBefore.length - 1]?.slotMs ?? 0)}.`
-        : `Past occurrences differ: ${pastBefore.length} before vs ${pastAfter.length} after.`,
+      evidence: !timingSame
+        ? `Past occurrences differ: ${pastBefore.length} before vs ${pastAfter.length} after.`
+        : contentProblems.length
+        ? contentProblems.join('; ')
+        : `${pastBefore.length} past occurrences match exactly, from ${fmt(pastBefore[0]?.slotMs ?? 0)} to ` +
+          `${fmt(pastBefore[pastBefore.length - 1]?.slotMs ?? 0)}, with ${pastOverrideIds.length} ` +
+          `customised one(s) byte-for-byte identical.`,
     });
   }
 
