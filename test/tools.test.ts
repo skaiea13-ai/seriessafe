@@ -76,11 +76,16 @@ test('commit is unreachable until validation has passed', async () => {
 
   const done = await call('commit_staged_split');
   assert.match(done, /5 item\(s\)/);
-  const after = await names();
-  assert.ok(after.includes('undo_series_split'), 'undo becomes available');
-  assert.ok(!after.includes('commit_staged_split'), 'commit is withdrawn again');
+  assert.ok((await names()).includes('undo_series_split'), 'undo becomes available immediately');
+
+  // A tool withdraws itself only after its own call has returned: cancelling
+  // the registration signal mid-execution aborts that execution on Chrome 152
+  // and earlier. One macrotask is enough for the withdrawal to land.
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(!(await names()).includes('commit_staged_split'), 'commit is withdrawn again');
 
   await call('undo_series_split');
+  await new Promise((r) => setTimeout(r, 0));
   assert.ok(!(await names()).includes('undo_series_split'), 'undo is withdrawn after use');
 });
 

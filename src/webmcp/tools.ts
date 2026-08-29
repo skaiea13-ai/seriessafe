@@ -25,6 +25,20 @@ export function webmcpAvailable(): boolean {
 let commitController: AbortController | null = null;
 let undoController: AbortController | null = null;
 
+/**
+ * Withdraw a tool *after* the current call has returned.
+ *
+ * `commit_staged_split` and `undo_series_split` deregister themselves as their
+ * last act. Registration is cancelled through an AbortSignal, and up to Chrome
+ * 152 aborting that signal also cancels the execution still in flight — the
+ * call fails with "The operation failed for an unknown transient reason" even
+ * though the work completed. Chrome 153 changed this, but deferring by a task
+ * is correct on every version.
+ */
+function withdrawAfterReturn(fn: () => void): void {
+  setTimeout(fn, 0);
+}
+
 const DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
 function ok(summary: string, data?: unknown): string {
@@ -201,8 +215,8 @@ export function doCommit(): string {
   const preserved = state.staged.plan.naiveLosses.length;
   state.staged = null;
   state.validation = null;
-  unregisterCommit();
   registerUndo();
+  withdrawAfterReturn(unregisterCommit);
   notify();
   return ok(
     `Committed. ${preserved} item(s) that a conventional edit would have destroyed are still present. ` +
@@ -219,7 +233,7 @@ export function doUndo(): string {
   const what = state.commit.summary;
   state.commit = null;
   resetDownstream();
-  unregisterUndo();
+  withdrawAfterReturn(unregisterUndo);
   notify();
   return ok(`Reverted: ${what}`);
 }
