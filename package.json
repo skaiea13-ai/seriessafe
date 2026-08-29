@@ -10,7 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "node --test \"test/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:webmcp": "node tools/webmcp-e2e.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

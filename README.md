@@ -109,13 +109,32 @@ Checked after a round-trip through `.ics` text, so a bug in the writer cannot sl
 
 ## Verification
 
+### Against real Chrome WebMCP
+
+`npm run test:webmcp` launches Chrome with `--enable-features=WebMCPTesting` in a throwaway profile, opens the deployed page, and drives the tools **over the DevTools Protocol** — resolving each `RegisteredTool` from `getTools()` and calling `executeTool`, never by reaching into the app's own functions. It also clicks the in-page walkthrough and checks it completes.
+
+Verified on **Chrome 151.0.7922.175** — 34/34 checks, against the live URL and localhost:
+
+- the page binds to the browser's `ModelContext`, not the fallback harness;
+- Chrome reports all nine tools over the CDP `WebMCP.toolsAdded` event;
+- `commit_staged_split` is genuinely absent from `getTools()` before validation, appears after it passes, and `WebMCP.toolsRemoved` fires when it is withdrawn;
+- the exported `.ics` keeps the make-up on its own Wednesday, re-anchored to the matching Thursday slot, along with the guest-lecture room, both cancellations, alarms and `X-` properties.
+
+Two bugs were found this way and could not have been found any other way:
+
+1. **The real `executeTool` signature is stricter than the draft docs.** It takes a `RegisteredTool` from `getTools()` plus the arguments as a JSON **string** — `executeTool(name, object)` throws *"The provided value is not of type 'RegisteredTool'"*. The scripted walkthrough was doing exactly that. The local harness now enforces Chrome's strictness so this cannot regress.
+2. **Withdrawing a tool from inside its own execution aborts that execution.** `commit_staged_split` deregisters itself as its last act; up to Chrome 152, aborting the registration signal cancels the in-flight call, which then fails with *"The operation failed for an unknown transient reason"* despite having done the work. Withdrawal is now deferred by one task.
+
+### Against an independent parser
+
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
-Nineteen tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+Twenty tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
 
 ```bash
 npm install
-npm test        # 19 tests
+npm test           # 20 unit and integration tests
+npm run test:webmcp   # 34 checks against real Chrome WebMCP (macOS Chrome 149+)
 npm run dev
 ```
 
@@ -123,7 +142,11 @@ The sample calendar mirrors a real Google Calendar export: folded lines, a `VTIM
 
 ## Running without WebMCP
 
-If the browser has no `document.modelContext`, SeriesSafe registers the identical tool definitions against a local stand-in and says so in the header. The **"Watch an agent do it"** button then drives the full eight-call sequence through `modelContext.executeTool`, exactly as an external agent would. Nothing is faked — only the transport differs.
+If the browser has no `document.modelContext`, SeriesSafe registers the identical tool definitions against a local stand-in and says so in the header. The **"Watch an agent do it"** button then drives the full eight-call sequence through `getTools()` and `executeTool`, exactly as an external agent would. Nothing is faked — only the transport differs.
+
+The stand-in mirrors Chrome 151's behaviour *including its strictness*: `registerTool` resolves with `undefined`, `getTools` returns `inputSchema` as a JSON string, and `executeTool` requires a `RegisteredTool` plus a JSON string and rejects anything else. A permissive stand-in hid a real bug once; it will not again.
+
+To enable the browser API yourself: Chrome 149 or later, `chrome://flags/#enable-webmcp-testing` → **Enabled**, then relaunch.
 
 ## Scope
 
