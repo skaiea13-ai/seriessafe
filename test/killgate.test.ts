@@ -75,10 +75,10 @@ test('KILL GATE: split preserves every invariant', () => {
   assert.ok(newMaster, 'new master exists');
 
   // 1. Past occurrences and their properties are untouched.
-  const pastOverride = events.find(
+  const pastOverride: any = events.find(
     (e: any) => e.uid === UID && e.isRecurrenceException() && kstDate(e.startDate.toJSDate().getTime()) === '2026-04-07',
   );
-  assert.ok(pastOverride as any, 'the April room-swap override is still attached to the original series');
+  assert.ok(pastOverride, 'the April room-swap override is still attached to the original series');
   assert.match(pastOverride.location, /Room C-105/);
 
   // 2. Old series now stops before the effective date.
@@ -134,7 +134,7 @@ test('KILL GATE: split preserves every invariant', () => {
     'no plain Thursday class is left behind on the replaced slot');
 
   // 7. Location and attendee overrides survive with their data.
-  const guest = events.find((e: any) => /Guest Lecture/.test(e.summary ?? ''));
+  const guest: any = events.find((e: any) => /Guest Lecture/.test(e.summary ?? ''));
   assert.ok(guest, 'guest-lecture override survives');
   assert.match(guest.location, /Room B-302/);
   assert.equal(guest.attendees.length, 3, 'the extra guest attendee is preserved');

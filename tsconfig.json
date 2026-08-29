@@ -17,7 +17,9 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
-    "types": [],
+    "types": [
+      "node"
+    ],
     "allowImportingTsExtensions": true
   },
   "include": [
