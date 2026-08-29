@@ -111,9 +111,11 @@ Checked after a round-trip through `.ics` text, so a bug in the writer cannot sl
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
+Nineteen tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+
 ```bash
 npm install
-npm test        # 12 tests
+npm test        # 19 tests
 npm run dev
 ```
 
