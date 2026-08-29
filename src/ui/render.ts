@@ -10,6 +10,16 @@ const esc = (s: unknown): string =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
   );
 
+/** A tick and a cross as SVG, so they render identically everywhere. */
+const TICK =
+  '<svg class="mark-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+  '<path d="M3 8.5l3.2 3.2L13 4.8" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+  'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const CROSS =
+  '<svg class="mark-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+  '<path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+  'stroke-linecap="round"/></svg>';
+
 const ALWAYS_TOOLS = [
   'load_calendar',
   'list_recurring_series',
@@ -28,7 +38,16 @@ function header(): string {
   return `
   <header class="top">
     <div class="brand">
-      <h1>🗓️ SeriesSafe</h1>
+      <h1>
+        <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <rect x="3" y="6" width="26" height="23" rx="4" fill="none" stroke="currentColor" stroke-width="2.2" />
+          <path d="M3 13h26" stroke="currentColor" stroke-width="2.2" />
+          <path d="M9.5 3v5M22.5 3v5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+          <path d="M10 21.5l3.6 3.6L23 16" fill="none" stroke="var(--keep)" stroke-width="2.8"
+                stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        SeriesSafe
+      </h1>
       <p class="lede">Move a recurring event to a different day — from a chosen date onward — without losing the cancellations, make-ups, room changes and reminders you already set.</p>
       <p>Calendar apps do this by ending the old series and creating a new one. Everything you customised after that date is silently discarded. SeriesSafe re-anchors it instead, and proves the result before committing.</p>
     </div>
@@ -229,15 +248,15 @@ function comparisonCard(): string {
         : r.kind === 'extra'
         ? 'keeps its own date'
         : `moves to ${formatHuman(r.newSlotMs, g.tzid)}, still cancelled`;
-    return `<li><span class="mark">✓</span><span class="txt"><strong>${what} — ${esc(formatHuman(r.oldSlotMs, g.tzid))}</strong><em>${esc(detail)}</em></span></li>`;
+    return `<li><span class="mark">${TICK}</span><span class="txt"><strong>${what} — ${esc(formatHuman(r.oldSlotMs, g.tzid))}</strong><em>${esc(detail)}</em></span></li>`;
   });
 
   const lost = plan.naiveLosses.map(
-    (l) => `<li><span class="mark">✕</span><span class="txt"><strong>${esc(l.label)}</strong><em>${esc(l.detail)}</em></span></li>`,
+    (l) => `<li><span class="mark">${CROSS}</span><span class="txt"><strong>${esc(l.label)}</strong><em>${esc(l.detail)}</em></span></li>`,
   );
 
   return `
-  <div class="card">
+  <div class="card compare-card">
     <h2>Same request, two ways</h2>
     <p class="hint">${plan.pastOccurrences.length} past meetings stay exactly as they are. ${plan.futureOccurrences.length} move to the new day. The difference is what happens to the ${plan.naiveLosses.length} things you had customised.</p>
     ${
@@ -278,7 +297,7 @@ function validationCard(): string {
   const rows = v.checks
     .map(
       (c) => `<div class="check ${c.pass ? 'pass' : 'fail'}">
-      <span class="mark">${c.pass ? '✓' : '✕'}</span>
+      <span class="mark">${c.pass ? TICK : CROSS}</span>
       <span class="body"><strong>${esc(c.title)}</strong><span>${esc(c.evidence)}</span></span>
     </div>`,
     )

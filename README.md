@@ -125,6 +125,14 @@ Two bugs were found this way and could not have been found any other way:
 1. **The real `executeTool` signature is stricter than the draft docs.** It takes a `RegisteredTool` from `getTools()` plus the arguments as a JSON **string** — `executeTool(name, object)` throws *"The provided value is not of type 'RegisteredTool'"*. The scripted walkthrough was doing exactly that. The local harness now enforces Chrome's strictness so this cannot regress.
 2. **Withdrawing a tool from inside its own execution aborts that execution.** `commit_staged_split` deregisters itself as its last act; up to Chrome 152, aborting the registration signal cancels the in-flight call, which then fails with *"The operation failed for an unknown transient reason"* despite having done the work. Withdrawal is now deferred by one task.
 
+### Against the rendered pixels
+
+`npm run test:a11y` and `npm run test:responsive` audit the running page in headless Chrome, in **both themes** and at 375 / 768 / 1024 / 1440.
+
+The contrast audit composites translucent layers before measuring — a tag tinted 8% amber sitting on a row tinted 8% amber over a card over the page is flattened to the colour actually painted, and element opacity is folded into the text colour. Checking the declared token instead of the painted pixel is how contrast bugs survive review: an earlier version of this audit read `rgba(248,113,113,0.1)` as solid red and reported a 1.0:1 ratio on text that was fine.
+
+Both themes currently report zero contrast failures, no touch target under 24px, no interactive element without a focus ring, no horizontal overflow, and no emoji standing in for an icon.
+
 ### Against an independent parser
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.

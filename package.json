@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "test": "node --test \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "test:webmcp": "node tools/webmcp-e2e.mjs"
+    "test:webmcp": "node tools/webmcp-e2e.mjs",
+    "test:a11y": "node tools/a11y-audit.mjs",
+    "test:responsive": "node tools/responsive-check.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 const URLX = process.argv[2] ?? 'https://skaiea13-ai.github.io/seriessafe/';
 const OUT = process.argv[3] ?? 'webmcp-connected.png';
+const SCHEME = process.argv[4] ?? 'dark';
 const PORT = 9336;
 const profile = mkdtempSync(join(tmpdir(), 'shot-'));
 const chrome = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', [
@@ -30,6 +31,9 @@ const { targetId } = await send('Target.createTarget', { url: URLX });
 const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
 await send('Runtime.enable', {}, sessionId);
 await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1500, deviceScaleFactor: 2, mobile: false }, sessionId);
+await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: SCHEME }] }, sessionId);
+await send('Page.reload', {}, sessionId);
+await new Promise(r => setTimeout(r, 1600));
 await new Promise(r => setTimeout(r, 2500));
 
 const ev = async (expression) => {
