@@ -31,6 +31,8 @@ export interface AppState {
   commit: CommitRecord | null;
   /** Chronological trace of every tool call, shown live in the UI. */
   log: Array<{ at: number; actor: 'agent' | 'user'; tool: string; detail: string; ok: boolean }>;
+  /** Set while the scripted agent sequence is running, so the UI can narrate it. */
+  walkthrough: { index: number; total: number; tool: string; why: string; done: boolean } | null;
 }
 
 export const state: AppState = {
@@ -43,6 +45,7 @@ export const state: AppState = {
   validation: null,
   commit: null,
   log: [],
+  walkthrough: null,
 };
 
 type Listener = () => void;

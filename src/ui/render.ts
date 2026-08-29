@@ -309,6 +309,16 @@ function committedCard(): string {
   </div>`;
 }
 
+function walkthroughNarration(): string {
+  const w = state.walkthrough;
+  if (!w) return '';
+  return `
+  <div class="ask" style="margin-top:14px;border-left-color:${w.done ? 'var(--keep)' : 'var(--accent)'}">
+    <span>${w.done ? 'sequence complete' : `step ${w.index + 1} of ${w.total} · ${esc(w.tool)}`}</span>
+    ${esc(w.why)}
+  </div>`;
+}
+
 function agentCard(): string {
   const dynamic = registeredToolNames().filter((n) => !ALWAYS_TOOLS.includes(n));
   const chips = [
@@ -336,8 +346,13 @@ function agentCard(): string {
     } <code>commit_staged_split</code> is not registered until validation passes, and <code>undo_series_split</code> only exists while a commit can be reverted.</p>
     <div class="tools">${chips}</div>
     <div class="row" style="margin-top:14px">
-      <button data-act="walkthrough">Watch an agent do it (${WALKTHROUGH.length} tool calls)</button>
+      <button data-act="walkthrough" ${state.walkthrough && !state.walkthrough.done ? 'disabled' : ''}>
+        ${state.walkthrough && !state.walkthrough.done
+          ? `Running… ${state.walkthrough.index + 1}/${state.walkthrough.total}`
+          : `Watch an agent do it (${WALKTHROUGH.length} tool calls)`}
+      </button>
     </div>
+    ${walkthroughNarration()}
     <h2 style="margin-top:18px">Activity</h2>
     <div class="log">${entries || '<div class="empty">Nothing yet.</div>'}</div>
   </div>`;

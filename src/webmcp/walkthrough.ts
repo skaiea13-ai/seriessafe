@@ -42,22 +42,36 @@ export const WALKTHROUGH: Step[] = [
   { tool: 'commit_staged_split', why: 'This tool only became available because validation passed.' },
 ];
 
-export async function runWalkthrough(
-  onStep?: (i: number, step: Step, result: string) => void,
-): Promise<void> {
+export async function runWalkthrough(announce: () => void): Promise<void> {
   const mc = modelContext();
   if (!mc) throw new Error('No model context is available.');
-  for (let i = 0; i < WALKTHROUGH.length; i++) {
-    const step = WALKTHROUGH[i];
-    const names: string[] = (await mc.getTools()).map((t: any) => t.name);
-    if (!names.includes(step.tool)) {
-      logCall(step.tool, `not registered yet — ${step.why}`, false);
-      throw new Error(`"${step.tool}" is not registered at this point in the workflow.`);
+  try {
+    for (let i = 0; i < WALKTHROUGH.length; i++) {
+      const step = WALKTHROUGH[i];
+      state.walkthrough = { index: i, total: WALKTHROUGH.length, tool: step.tool, why: step.why, done: false };
+      announce();
+      // Let the narration paint before the call runs.
+      await new Promise((r) => setTimeout(r, 620));
+
+      const names: string[] = (await mc.getTools()).map((t: any) => t.name);
+      if (!names.includes(step.tool)) {
+        logCall(step.tool, `not registered at this point — ${step.why}`, false);
+        throw new Error(`"${step.tool}" is not registered yet.`);
+      }
+      await mc.executeTool(step.tool, step.args ?? {});
+      await new Promise((r) => setTimeout(r, 260));
     }
-    const result = await mc.executeTool(step.tool, step.args ?? {});
-    onStep?.(i, step, String(result));
-    // Let the UI paint between calls so the sequence is visible.
-    await new Promise((r) => setTimeout(r, 420));
+    state.walkthrough = {
+      index: WALKTHROUGH.length - 1,
+      total: WALKTHROUGH.length,
+      tool: 'done',
+      why: 'Committed — and every exception is still there.',
+      done: true,
+    };
+    announce();
+  } catch (err) {
+    state.walkthrough = null;
+    announce();
+    throw err;
   }
-  void state;
 }

@@ -125,10 +125,8 @@ document.addEventListener('click', (ev) => {
         state.validation = null;
         state.commit = null;
         state.log = [];
-        runWalkthrough((i, step) => {
-          logCall(step.tool, step.why, true);
-          void i;
-        })
+        state.walkthrough = null;
+        runWalkthrough(render)
           .catch((err) => logCall('walkthrough', (err as Error).message, false))
           .finally(render);
         break;
