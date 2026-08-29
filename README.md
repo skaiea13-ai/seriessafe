@@ -1,0 +1,134 @@
+# SeriesSafe
+
+**Move a recurring event to a different day — without losing the cancellations, make-ups, room changes and reminders you already set.**
+
+Built for the [OpenAI WebMCP Challenge](https://webmcp.devpost.com/).
+
+---
+
+## The problem is real, and it is documented by the vendors themselves
+
+Every calendar app offers "this and following" when you change a repeating event. What it actually does is end the old series and create a new one — and the customisations you made to future occurrences are discarded on the way.
+
+This is not a bug report from us. It is how the platforms describe their own behaviour:
+
+- **Google Calendar** implements a "this and following" change as two requests — truncate the old series, create a new one — and states that instances after the target are reset. <https://developers.google.com/workspace/calendar/api/guides/recurringevents>
+- **Microsoft Exchange (MS-OXOCAL)** specifies that when a recurrence pattern changes, future exceptions are cancelled and the exception objects are removed. <https://learn.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-oxocal/4b92fb85-db55-4251-8e81-e319361218e1>
+- **Microsoft's own guidance** warns organisations that ending a recurring series early loses the attached exceptions. <https://support.microsoft.com/en-us/outlook/best-practices-for-organizations-when-using-the-outlook-calendar>
+
+So when a teacher moves a Tuesday class to Thursday from September, the two public holidays they cancelled quietly become classes again, the make-up session they had already moved to a Wednesday disappears, and the guest-lecture room booking goes with it. Nobody is told. There is no diff, and no undo that brings the exceptions back.
+
+**SeriesSafe does the same edit without the loss, and proves it before committing anything.**
+
+## What it does
+
+Give it an `.ics` export and an ordinary sentence:
+
+> "From September, move my Tuesday class to Thursday — but keep the holidays I cancelled, the make-up I already moved, and the guest-lecture room."
+
+SeriesSafe:
+
+1. reads the **series graph** behind the calendar grid — the rule, the cancellations (`EXDATE`), the detached overrides (`RECURRENCE-ID`), the added dates (`RDATE`) and the ordinal identity that links them;
+2. re-anchors every future exception onto the new pattern;
+3. shows you the same request applied **two ways** — as SeriesSafe applies it, and as a conventional edit applies it — with the losses itemised;
+4. verifies eight invariants **against the serialized `.ics` bytes**, not against its own plan;
+5. only then makes committing possible at all.
+
+Everything runs in the tab. No calendar account, no upload, no server.
+
+## The idea that makes it safe: ordinal alignment
+
+The Nth remaining occurrence of the old rule maps to the Nth occurrence of the new rule.
+
+A cancellation on the *second* remaining Tuesday becomes a cancellation on the *second* remaining Thursday — because "that week is off" is indexed by week, not by calendar date.
+
+A detached override is re-anchored the same way, but **keeps its own start time**. A make-up already moved to Wednesday 16 September stays on Wednesday 16 September; only the slot it hangs from moves to Thursday 17 September. That single distinction is what stops it from being either absorbed into the new pattern or duplicated beside it.
+
+Explicit added dates (`RDATE`) are not part of the pattern, so they are excluded from the ordinal count and keep their own dates. Counting them would shift every later exception by one week — a bug this project had, caught by its own validator, and now covered by a regression test.
+
+## Why WebMCP, specifically
+
+A calendar UI renders *occurrences*. The structure that defines them — which Tuesday is a cancellation rather than a gap, which event is a detached override rather than a separate meeting, which ordinal a given exception is anchored to — is never in the DOM. An agent working from pixels or from a month grid cannot recover it, and cannot tell a silently-lost exception from one that was never there.
+
+WebMCP lets the page hand the agent the semantic layer it already owns, and keep the safety rules on the page side where they can be enforced:
+
+| Tool | What it is for |
+| --- | --- |
+| `load_calendar` | Bring an `.ics` in (bundled sample, or pasted text). |
+| `list_recurring_series` | Which series exist, and which carry exceptions. |
+| `inspect_series` | The rule, zone, span, and how many occurrences are not ordinary. |
+| `list_series_exceptions` | Every exception **with the ordinal that anchors it**. |
+| `simulate_series_split` | Dry run. Returns the re-anchoring plan, the predicted losses, and any refusal. Changes nothing. |
+| `stage_series_split` | Prepare the change. Refuses outright if anything cannot be re-anchored with certainty. |
+| `validate_staged_split` | Eight invariants, each with concrete evidence, checked against the serialized file. |
+| `compare_with_conventional_edit` | The same request applied both ways, itemised. |
+| `export_calendar_ics` | The result, or deliberately the lossy version, for comparison. |
+| `commit_staged_split` | **Registered only after validation passes.** |
+| `undo_series_split` | **Registered only while a commit exists to revert.** |
+
+Two properties are worth calling out:
+
+**There is no `fix_my_calendar` tool.** The agent has to read the structure, propose a change, look at what the simulation says it would cost, and only then stage, validate and commit. It has to change course on intermediate results — an unsupported rule part, an override that cannot be re-anchored, an end date that would silently cost a meeting.
+
+**Dynamic registration is the safety boundary, not a UI state.** `commit_staged_split` is not disabled before validation; it does not exist. Calling it returns *"No tool named commit_staged_split is registered right now."* This is covered by a test.
+
+## Failing closed
+
+Staging is refused, with a remedy, when SeriesSafe cannot prove the outcome:
+
+| Refusal | Why |
+| --- | --- |
+| `UNSUPPORTED_RRULE_PART` | `BYSETPOS`, `BYWEEKNO`, `BYMONTH`… change how positions are counted. |
+| `MULTIPLE_RRULE` | More than one `RRULE` on the master. |
+| `RANGE_THISANDFUTURE` | An override that applies forward cannot be re-anchored safely. |
+| `ORDINAL_OUT_OF_RANGE` | The new rule has no slot to carry a given exception. |
+| `END_DATE_DROPS_MEETINGS` | Holding the old end date would quietly cost a meeting. |
+| `NOTHING_AFTER_DATE` / `NOTHING_BEFORE_DATE` | There is no split to make. |
+
+### The end-of-series trap
+
+Moving Tuesday → Thursday while keeping a fixed `UNTIL` date **silently drops the final meeting**, because the last Thursday falls before the last Tuesday. SeriesSafe surfaces the trade-off instead of choosing for you:
+
+- `preserve-count` (default) — keep every remaining meeting; the end date shifts to Thu 31 Dec.
+- `keep-end-date` — hold the original end date; **refused** here, because it would cost a class.
+
+Our own validator caught this during development. It is now a regression test.
+
+## The eight invariants
+
+Checked after a round-trip through `.ics` text, so a bug in the writer cannot slip past:
+
+1. Every occurrence before the effective date is unchanged.
+2. The original series produces nothing on or after the effective date.
+3. Cancelled dates are still cancelled after the move.
+4. Moved and customised occurrences survive, exactly once, at their own time.
+5. Locations, attendees, reminders and private `X-` properties carried across.
+6. No occurrence was duplicated.
+7. The total number of real meetings is unchanged.
+8. No other event in the calendar was modified.
+
+## Verification
+
+The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
+
+```bash
+npm install
+npm test        # 12 tests
+npm run dev
+```
+
+The sample calendar mirrors a real Google Calendar export: folded lines, a `VTIMEZONE` block, a multi-value `EXDATE`, an `RDATE`, three detached overrides, alarms, and private `X-` properties. Any real `.ics` export works too.
+
+## Running without WebMCP
+
+If the browser has no `document.modelContext`, SeriesSafe registers the identical tool definitions against a local stand-in and says so in the header. The **"Watch an agent do it"** button then drives the full eight-call sequence through `modelContext.executeTool`, exactly as an external agent would. Nothing is faked — only the transport differs.
+
+## Scope
+
+Supported: `FREQ=WEEKLY` (plus `DAILY`/`MONTHLY`/`YEARLY` expansion), `INTERVAL`, `BYDAY`, `COUNT`, `UNTIL`, `WKST`, `TZID` with DST-correct wall-clock arithmetic, `EXDATE`, `RDATE`, detached `RECURRENCE-ID`, `VALARM`, `ATTENDEE`, `X-` properties, and lossless retention of every property SeriesSafe does not itself understand.
+
+Deliberately refused: `RANGE=THISANDFUTURE`, multiple `RRULE`s, and positional `BY*` parts. Live OAuth write-back to Google or Microsoft is out of scope; SeriesSafe works on `.ics` import and export, which is the interchange format both providers document.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,20 @@
+{
+  "name": "seriessafe",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Recurring-calendar surgery that proves nothing was lost. A WebMCP-native web app.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "ical.js": "^2.2.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}
