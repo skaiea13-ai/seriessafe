@@ -1,4 +1,5 @@
 import { modelContext } from './tools.ts';
+import { callTool } from './harness.ts';
 import { logCall, state } from '../state.ts';
 
 /**
@@ -58,7 +59,8 @@ export async function runWalkthrough(announce: () => void): Promise<void> {
         logCall(step.tool, `not registered at this point — ${step.why}`, false);
         throw new Error(`"${step.tool}" is not registered yet.`);
       }
-      await mc.executeTool(step.tool, step.args ?? {});
+      // Resolve the RegisteredTool and pass a JSON string, as Chrome requires.
+      await callTool(mc, step.tool, step.args ?? {});
       await new Promise((r) => setTimeout(r, 170));
     }
     state.walkthrough = {

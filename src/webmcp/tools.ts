@@ -233,6 +233,7 @@ const registered: string[] = [];
 async function reg(def: any, options?: any): Promise<void> {
   const mc = modelContext();
   if (!mc) return;
+  // Chrome resolves registerTool with undefined; nothing is read from it.
   await mc.registerTool(def, options);
   if (!registered.includes(def.name)) registered.push(def.name);
   notify();
