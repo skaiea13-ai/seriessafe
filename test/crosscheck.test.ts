@@ -1228,3 +1228,68 @@ test('an end stated in another zone keeps that zone', () => {
   getProp(master, 'DTEND')!.params = [{ name: 'TZID', values: ['Asia/Seoul'] }];
   assert.ok(!validateStage(cal, tampered, g, plan).pass);
 });
+
+/* ---- fourteenth review round: validator hardening ------------------ */
+
+test('five more ways to damage the result are now caught', () => {
+  /*
+   * None of these are produced by the writer — they are ways the validator
+   * could have been fooled, and the product's claim is that it proves the
+   * result rather than trusting the writer.
+   */
+  const src = readFileSync(new URL('../fixtures/korean-class.ics', import.meta.url), 'utf8');
+  const uid = 'advanced-korean-tue@school.example.com';
+  const setup = () => {
+    const cal = parseIcs(src);
+    const g = buildSeriesGraph(cal, uid)!;
+    const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 7, 31, 15), byday: ['TH'] });
+    assert.ok(plan.ok, JSON.stringify(plan.refusals));
+    return { cal, g, plan };
+  };
+  const masterOf = (cal: any, u: string) =>
+    cal.children.find((e: any) => e.name === 'VEVENT' && getProp(e, 'UID')?.value === u && !getProp(e, 'RECURRENCE-ID'));
+  const overrideOf = (cal: any, u: string) =>
+    cal.children.find((e: any) => e.name === 'VEVENT' && getProp(e, 'UID')?.value === u && getProp(e, 'RECURRENCE-ID'));
+
+  const cases: Array<[string, (cal: any, plan: any) => void]> = [
+    ['the anchor is written in another zone, detaching it from its slot', (cal, plan) => {
+      getProp(overrideOf(cal, plan.newUid), 'RECURRENCE-ID')!.params =
+        [{ name: 'TZID', values: ['America/New_York'] }];
+    }],
+    ['an occurrence loses its end time', (cal, plan) => {
+      const e = overrideOf(cal, plan.newUid);
+      e.props = e.props.filter((p: any) => p.name !== 'DTEND');
+    }],
+    ['a second RRULE appears', (cal, plan) => {
+      masterOf(cal, plan.newUid).props.push({ name: 'RRULE', params: [], value: 'FREQ=DAILY' });
+    }],
+    ['a second DTSTART appears', (cal, plan) => {
+      const m = masterOf(cal, plan.newUid);
+      m.props.push({ ...getProp(m, 'DTSTART')! });
+    }],
+  ];
+  for (const [label, damage] of cases) {
+    const { cal, g, plan } = setup();
+    assert.ok(validateStage(cal, applySplit(cal, g, plan).calendar, g, plan).pass,
+      `${label}: the honest result must still pass`);
+    const damaged = applySplit(cal, g, plan).calendar;
+    damage(damaged, plan);
+    assert.ok(!validateStage(cal, damaged, g, plan).pass, `${label} must fail validation`);
+  }
+
+  // A trailing Z is not a parameter, so dropping it changed the meaning while
+  // every parameter still matched.
+  const utc = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=80',
+                    'EXDATE:20260922T090000Z'].join('\r\n'));
+  const cal = parseIcs(utc);
+  const g = buildSeriesGraph(cal, UID)!;
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  const stripped = applySplit(cal, g, plan).calendar;
+  for (const e of stripped.children) {
+    if (e.name !== 'VEVENT') continue;
+    for (const p of e.props) if (p.name === 'EXDATE') p.value = p.value.replace(/Z/g, '');
+  }
+  assert.ok(!validateStage(cal, stripped, g, plan).pass, 'a UTC value turned floating must fail');
+});

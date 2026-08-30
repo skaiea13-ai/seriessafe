@@ -153,11 +153,11 @@ Both themes currently report zero contrast failures, no touch target under 24px,
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
-Eighty-six tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+Eighty-seven tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
 
 ```bash
 npm install
-npm test              # 86 unit and integration tests
+npm test              # 87 unit and integration tests
 npm run test:sweep    # 405 legitimate open-ended moves, none refused
 npm run test:webmcp   # 34 checks against real Chrome WebMCP (macOS, Chrome 149+)
 npm run test:a11y     # contrast, targets, focus, overflow — both themes
@@ -190,6 +190,21 @@ Twenty-one refusal codes is a lot of ways to say no, so the suite checks the oth
 `FREQ=MONTHLY;BYDAY=1MO` means the first Monday of the month, and an engine that renders it as the first of the month is not entitled to edit it. Monthly rules also dropped their last occurrence, and a yearly rule on 29 February produced 1 March in non-leap years — all of which the README had already declared out of scope while the code went ahead anyway.
 
 Live OAuth write-back to Google or Microsoft is out of scope; SeriesSafe works on `.ics` import and export, which is the interchange format both providers document.
+
+## What this does not claim
+
+Fourteen adversarial review rounds is enough to know the shape of what is left, and not enough to claim there is nothing.
+
+The last round found **no case where SeriesSafe writes a wrong calendar from ordinary input** — that was the question it was asked, and the answer was none. What it did still find were four ways to *refuse* a file that a more capable tool would accept, all of them rare combinations involving `RDATE`:
+
+- an evening meeting on the day of the change, in a zone behind UTC, alongside an all-day added date;
+- adding a weekday when an added date already duplicates a rule slot;
+- changing how often a series meets when its only exception is a harmless added date;
+- a detached override attached to an added date rather than to a rule slot.
+
+Each of these declines rather than damages, which is the behaviour this tool is built around — but they are limitations, not features, and a calendar that hits one is a calendar SeriesSafe cannot help with today.
+
+So: **weekly recurrence, verified thoroughly. Everything else, refused rather than guessed.** Not "handles all valid iCalendar", which would not be true.
 
 ## Licence
 

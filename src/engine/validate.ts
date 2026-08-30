@@ -262,7 +262,13 @@ export function validateStage(
         // to every later occurrence, so an anchor that gained one is not the
         // anchor that was planned.
         if ((getParam(rid, 'RANGE') ?? '') !== '') return false;
-        return rid.value === formatLike(before, r.newSlotMs);
+        // Resolved with its own parameters, not just matched as text: swapping
+        // the anchor's zone kept the same characters and detached it from the
+        // slot it is supposed to name.
+        const tz = getParam(rid, 'TZID');
+        if (tz && !isKnownTimeZone(tz)) return false;
+        const resolvedRid = parseDateTime(rid.value, tz ?? before.tzid)?.ms;
+        return resolvedRid === r.newSlotMs;
       });
       if (hits.length !== 1) {
         problems.push(`${fmt(r.oldSlotMs)} resolved to ${hits.length} events (expected exactly 1)`);
@@ -344,6 +350,16 @@ export function validateStage(
        * belongs at the new slot — leaving it behind stranded it on the old
        * weekday while its anchor moved.
        */
+      // How this occurrence states its length must not change either.
+      const endShape = (c: Component) =>
+        `${getProp(c, 'DTEND') ? 'DTEND' : ''}${getProp(c, 'DURATION') ? 'DURATION' : ''}` || 'neither';
+      if (endShape(src) !== endShape(dst)) {
+        problems.push(
+          `the ${fmt(r.oldSlotMs)} occurrence states its length differently: ` +
+            `${endShape(src)} became ${endShape(dst)}`,
+        );
+      }
+
       const wasRelocated = r.keptStartMs !== undefined && r.keptStartMs !== r.oldSlotMs;
       const wantStartMs = wasRelocated ? r.keptStartMs! : r.newSlotMs;
       const resolveOn = (c: Component, name: string) => {
@@ -402,6 +418,15 @@ export function validateStage(
        * class into a four-hour one, both with every check green. They are
        * compared as resolved instants, not as text.
        */
+      /*
+       * Properties RFC 5545 allows only once. A second DTSTART or RRULE makes
+       * the event ambiguous, and readers disagree about which one wins.
+       */
+      for (const once of ['DTSTART', 'DTEND', 'DURATION', 'RRULE', 'UID', 'SUMMARY'] as const) {
+        const n = newMaster.props.filter((p) => p.name === once).length;
+        if (n > 1) contentProblemsOfStart.push(`the new series has ${n} ${once} properties, which must appear once`);
+      }
+
       const wantForm = expectedForm(before);
       const resolved = (p: Prop | undefined) => {
         if (!p) return null;
@@ -497,15 +522,18 @@ export function validateStage(
       const master = reparsed.children.find(
         (c) => c.name === 'VEVENT' && (getProp(c, 'UID')?.value ?? '') === uid && !getProp(c, 'RECURRENCE-ID'),
       );
-      const out: Array<{ ms: number | null; key: string; form: string; zoneOk: boolean }> = [];
+      const out: Array<{ ms: number | null; key: string; isUtc: boolean; zoneOk: boolean }> = [];
       for (const p of master?.props.filter((x) => x.name === name) ?? []) {
         const tz = getParam(p, 'TZID');
         const zoneOk = !tz || isKnownTimeZone(tz);
         for (const v of p.value.split(',')) {
+          const parsed = zoneOk ? parseDateTime(v, tz) : null;
           out.push({
-            ms: zoneOk ? parseDateTime(v, tz)?.ms ?? null : null,
+            ms: parsed?.ms ?? null,
             key: paramKey(p.params),
-            form: dateForm(p),
+            // A trailing Z is not a parameter, so dropping it changed the
+            // meaning while every parameter still matched.
+            isUtc: parsed?.isUtc ?? false,
             zoneOk,
           });
         }
@@ -523,7 +551,7 @@ export function validateStage(
         const target = moved ? newOut : oldOut;
         const wantMs = moved ? moved.newSlotMs : e.ms;
         const want = paramKey(e.params);
-        if (!target.some((o) => o.ms === wantMs && o.key === want && o.zoneOk)) {
+        if (!target.some((o) => o.ms === wantMs && o.key === want && o.isUtc === e.isUtc && o.zoneOk)) {
           problems.push(`${name} for ${fmt(e.ms)} lost its entry, its time zone, its value type or its parameters`);
         } else carried++;
       }
