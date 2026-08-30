@@ -82,24 +82,26 @@ export function compareResults(
     }
 
     if (occ.kind === 'overridden') {
-      // Identity is the override's own start instant, which SeriesSafe keeps
-      // deliberately, plus membership of this series.
-      const startsAt = (evs: Component[], cal: Component, uids: string[]) => {
-        const occs = seriesOf(cal, uids);
-        return (
-          occs.some((o) => o.kind === 'overridden' && o.startMs === occ.startMs) ||
-          evs.some((e) => {
-            const s = getProp(e, 'DTSTART')?.value ?? '';
-            return s.length > 0 && occs.some((o) => o.startMs === occ.startMs) && s === s;
-          })
+      /*
+       * Identity is this specific detached override: same summary, same start
+       * instant, still attached to this series. Matching on "some occurrence
+       * starts at that moment" let an unrelated past override of the same
+       * series stand in for a destroyed future one.
+       */
+      const wantedSummary = getProp(occ.override!, 'SUMMARY')?.value ?? '';
+      const wantedStart = getProp(occ.override!, 'DTSTART')?.value ?? '';
+      const survives = (evs: Component[]) =>
+        evs.some(
+          (e) =>
+            (getProp(e, 'SUMMARY')?.value ?? '') === wantedSummary &&
+            (getProp(e, 'DTSTART')?.value ?? '') === wantedStart,
         );
-      };
       items.push({
         what: 'Customised meeting',
         when,
-        inSeriesSafe: startsAt(safeOverrides, safeCal, safeUids),
-        inConventional: startsAt(naiveOverrides, naiveCal, naiveUids),
-        detail: `"${getProp(occ.override!, 'SUMMARY')?.value ?? 'that meeting'}" with its own time, place and guests`,
+        inSeriesSafe: survives(safeOverrides),
+        inConventional: survives(naiveOverrides),
+        detail: `"${wantedSummary || 'that meeting'}" with its own time, place and guests`,
       });
       continue;
     }

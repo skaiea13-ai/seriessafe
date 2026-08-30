@@ -250,7 +250,7 @@ async function main() {
   check(!afterStage.includes('commit_staged_split'), 'staging alone does not unlock commit');
 
   const validated = String(await invoke('validate_staged_split', {}));
-  check(/All 8 invariants hold/.test(validated), 'validate_staged_split reports all invariants holding',
+  check(/All 9 invariants hold/.test(validated), 'validate_staged_split reports all invariants holding',
     validated.split('\n')[0]);
 
   const afterValidate = await evaluate(`document.modelContext.getTools().then(t => t.map(x=>x.name))`);
@@ -312,7 +312,7 @@ async function main() {
   check((walk.failedEntries ?? []).length === 0, 'no tool call failed during the walkthrough',
     (walk.failedEntries ?? []).join(' | '));
   check(walk.committed === true, 'the walkthrough reached a committed state');
-  check(walk.proofChecks === 8, 'all eight invariants are shown as passing', `got ${walk.proofChecks}`);
+  check(walk.proofChecks === 9, 'all nine invariants are shown as passing', `got ${walk.proofChecks}`);
 
   const consoleErrors = await evaluate(`(window.__seriesSafeErrors ?? []).length`);
   check(consoleErrors === 0 || consoleErrors === undefined, 'no uncaught page errors');

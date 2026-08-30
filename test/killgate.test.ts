@@ -293,7 +293,7 @@ test('a same-weekday time change keeps the end date exactly', () => {
 /* ------------------------------------------------------------------ */
 /* Regressions from the cross-validation pass.                         */
 /* Each of these once produced a wrong result, or a silent loss, while */
-/* all eight invariants reported success.                              */
+/* every invariant reported success.                                   */
 /* ------------------------------------------------------------------ */
 
 test('changing how often the series meets is refused, not mis-anchored', () => {

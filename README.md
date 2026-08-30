@@ -62,7 +62,7 @@ WebMCP lets the page hand the agent the semantic layer it already owns, and keep
 | `list_series_exceptions` | Every exception **with the ordinal that anchors it**. |
 | `simulate_series_split` | Dry run. Returns the re-anchoring plan, the predicted losses, and any refusal. Changes nothing. |
 | `stage_series_split` | Prepare the change. Refuses outright if anything cannot be re-anchored with certainty. |
-| `validate_staged_split` | Eight invariants, each with concrete evidence, checked against the serialized file. |
+| `validate_staged_split` | Nine invariants, each with concrete evidence, checked against the serialized file. |
 | `compare_with_conventional_edit` | The same request applied both ways, itemised. |
 | `export_calendar_ics` | The result, or deliberately the lossy version, for comparison. |
 | `commit_staged_split` | **Registered only after validation passes.** |
@@ -105,7 +105,7 @@ Moving Tuesday → Thursday while keeping a fixed `UNTIL` date **silently drops 
 
 Our own validator caught this during development. It is now a regression test.
 
-## The eight invariants
+## The nine invariants
 
 Checked after a round-trip through `.ics` text, so a bug in the writer cannot slip past:
 
@@ -116,7 +116,8 @@ Checked after a round-trip through `.ics` text, so a bug in the writer cannot sl
 5. Locations, attendees, reminders and private `X-` properties carried across.
 6. No occurrence was duplicated.
 7. The total number of real meetings is unchanged.
-8. No other event in the calendar was modified.
+8. The recurrence written out is the one that was planned.
+9. No other event in the calendar was modified.
 
 ## Verification
 
@@ -148,11 +149,11 @@ Both themes currently report zero contrast failures, no touch target under 24px,
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
-Forty-six tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+Fifty tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
 
 ```bash
 npm install
-npm test              # 46 unit and integration tests
+npm test              # 50 unit and integration tests
 npm run test:sweep    # 405 legitimate open-ended moves, none refused
 npm run test:webmcp   # 34 checks against real Chrome WebMCP (macOS, Chrome 149+)
 npm run test:a11y     # contrast, targets, focus, overflow — both themes

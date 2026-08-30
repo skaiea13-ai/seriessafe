@@ -221,7 +221,20 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   const occurrences: Occurrence[] = slots.map((slotMs, index) => {
     const ov = overrides.get(slotMs);
     if (exSet.has(slotMs)) {
-      return { index, slotMs, kind: 'cancelled', startMs: slotMs, note: 'Cancelled (EXDATE)' };
+      /*
+       * A slot can be cancelled twice over: by an EXDATE and by a detached
+       * override carrying STATUS:CANCELLED. Taking the EXDATE branch first
+       * used to discard the override, which then stayed behind on the series
+       * being truncated, taking its note and its reminder with it.
+       */
+      return {
+        index,
+        slotMs,
+        kind: 'cancelled',
+        startMs: slotMs,
+        override: ov,
+        note: ov ? 'Cancelled (EXDATE and a cancelled occurrence)' : 'Cancelled (EXDATE)',
+      };
     }
     if (ov) {
       // A detached override carrying STATUS:CANCELLED is not a meeting that
@@ -338,11 +351,18 @@ export function formatLike(g: SeriesGraph, ms: number): string {
   return formatDateTime(ms, { isDate: g.isDate, isUtc: g.isUtc, tzid: g.tzid });
 }
 
-/** The parameters a date property of this series' type must carry. */
-export function dtParams(g: SeriesGraph): Param[] {
-  if (g.isDate) return [{ name: 'VALUE', values: ['DATE'] }];
-  if (g.isUtc) return [];
-  return g.tzid ? [{ name: 'TZID', values: [g.tzid] }] : [];
+/**
+ * The parameters a date property of this series' type must carry, keeping any
+ * others the file already had.
+ *
+ * Replacing the parameter list wholesale silently deleted legitimate `X-`
+ * parameters that travel on DTSTART, DTEND, EXDATE and RDATE.
+ */
+export function dtParams(g: SeriesGraph, existing: Param[] = []): Param[] {
+  const kept = existing.filter((p) => p.name !== 'VALUE' && p.name !== 'TZID');
+  if (g.isDate) return [{ name: 'VALUE', values: ['DATE'] }, ...kept];
+  if (g.isUtc) return kept;
+  return g.tzid ? [{ name: 'TZID', values: [g.tzid] }, ...kept] : kept;
 }
 
 /**

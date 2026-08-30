@@ -30,13 +30,16 @@ function dateListProp(
   name: string,
   instants: number[],
   graph: SeriesGraph,
+  existing: Component['props'] = [],
 ): Component['props'][number] | null {
   if (!instants.length) return null;
   const values = instants
     .slice()
     .sort((a, b) => a - b)
     .map((ms) => formatLike(graph, ms));
-  return { name, params: dtParams(graph), value: values.join(',') };
+  // Carry across any extra parameters the original property had.
+  const carried = existing.find((p) => p.name === name)?.params ?? [];
+  return { name, params: dtParams(graph, carried), value: values.join(',') };
 }
 
 export interface ApplyResult {
@@ -84,14 +87,13 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   oldRuleProp.value = formatRRule(oldRule);
 
   // Past-only EXDATE / RDATE stay on the old master.
-  removeProps(oldMaster, 'EXDATE');
-  removeProps(oldMaster, 'RDATE');
+  const originalDateProps = [...removeProps(oldMaster, 'EXDATE'), ...removeProps(oldMaster, 'RDATE')];
   const firstFutureSlot = plan.futureOccurrences[0]?.slotMs ?? Infinity;
   const pastEx = graph.exdates.filter((ms) => ms < firstFutureSlot);
   const pastRd = graph.rdates.filter((ms) => ms < firstFutureSlot);
-  const exProp = dateListProp('EXDATE', pastEx, graph);
+  const exProp = dateListProp('EXDATE', pastEx, graph, originalDateProps);
   if (exProp) oldMaster.props.push(exProp);
-  const rdProp = dateListProp('RDATE', pastRd, graph);
+  const rdProp = dateListProp('RDATE', pastRd, graph, originalDateProps);
   if (rdProp) oldMaster.props.push(rdProp);
   bumpSequence(oldMaster);
   stampDtstamp(oldMaster);
@@ -106,21 +108,21 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   const newDtstart = getProp(newMaster, 'DTSTART');
   if (newDtstart) {
     newDtstart.value = formatLike(graph, plan.newDtstartMs);
-    newDtstart.params = dtParams(graph);
+    newDtstart.params = dtParams(graph, newDtstart.params);
   }
   const newDtend = getProp(newMaster, 'DTEND');
   if (newDtend) {
     newDtend.value = formatLike(graph, plan.newDtstartMs + graph.durationMs);
-    newDtend.params = dtParams(graph);
+    newDtend.params = dtParams(graph, newDtend.params);
   }
   getProps(newMaster, 'RRULE')[0].value = plan.newRuleText;
 
   // Re-anchored cancellations and extra dates.
   const newEx = plan.remaps.filter((r) => r.kind === 'cancellation').map((r) => r.newSlotMs);
   const newRd = plan.remaps.filter((r) => r.kind === 'extra').map((r) => r.newSlotMs);
-  const newExProp = dateListProp('EXDATE', newEx, graph);
+  const newExProp = dateListProp('EXDATE', newEx, graph, originalDateProps);
   if (newExProp) newMaster.props.push(newExProp);
-  const newRdProp = dateListProp('RDATE', newRd, graph);
+  const newRdProp = dateListProp('RDATE', newRd, graph, originalDateProps);
   if (newRdProp) newMaster.props.push(newRdProp);
   newMaster.props.push({
     name: 'X-SERIESSAFE-SPLIT-FROM',
@@ -159,7 +161,7 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
     const ridProp = getProp(moved, 'RECURRENCE-ID');
     if (ridProp) {
       ridProp.value = formatLike(graph, remap.newSlotMs);
-      ridProp.params = dtParams(graph);
+      ridProp.params = dtParams(graph, ridProp.params);
     }
     moved.props.push({
       name: 'X-SERIESSAFE-REANCHORED-FROM',
@@ -221,12 +223,12 @@ export function applyNaive(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   const nd = getProp(newMaster, 'DTSTART');
   if (nd) {
     nd.value = formatLike(graph, plan.newDtstartMs);
-    nd.params = dtParams(graph);
+    nd.params = dtParams(graph, nd.params);
   }
   const ne = getProp(newMaster, 'DTEND');
   if (ne) {
     ne.value = formatLike(graph, plan.newDtstartMs + graph.durationMs);
-    ne.params = dtParams(graph);
+    ne.params = dtParams(graph, ne.params);
   }
   getProps(newMaster, 'RRULE')[0].value = plan.newRuleText;
 

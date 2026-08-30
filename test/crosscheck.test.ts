@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ICAL from 'ical.js';
 
-import { parseIcs, zonedToUtc, startOfDayInZone } from '../src/ics/parse.ts';
+import { parseIcs, zonedToUtc, startOfDayInZone, parseDateTime } from '../src/ics/parse.ts';
 import { serializeIcs } from '../src/ics/serialize.ts';
 import { getProp } from '../src/ics/types.ts';
 import { buildSeriesGraph } from '../src/engine/series.ts';
@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
  * Regressions from an adversarial cross-validation pass.
  *
  * Every case here once produced a wrong result — or lost data outright — while
- * all eight invariants reported success.
+ * every invariant reported success.
  */
 
 const UID = 'x@test';
@@ -39,7 +39,7 @@ const codes = (p: { refusals: Array<{ code: string }> }) => p.refusals.map((r) =
 
 test('a long series is expanded to its real end, not a fixed horizon', () => {
   // A three-year modelling window rewrote a five-year series as a short finite
-  // one and dropped every occurrence beyond it, with all eight checks green.
+  // one and dropped every occurrence beyond it, with every check green.
   const ics = wrap([
     'DTSTART:20260105T090000Z', 'DTEND:20260105T100000Z',
     'RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20301230T090000Z',
@@ -418,4 +418,86 @@ test('an exception years beyond any window is still carried', () => {
   const carried = plan.remaps.find((r) => r.oldSlotMs === Date.UTC(2031, 8, 9, 9));
   assert.ok(carried, 'the 2031 cancellation is carried');
   assert.match(out, /20310911T090000Z/, 'onto the Thursday of its own week');
+});
+
+/* ---- third review round -------------------------------------------- */
+
+test('a rule that changed shape in the file is caught', () => {
+  // Rewriting an open-ended weekly rule as monthly produced far fewer
+  // meetings, and the equal-length prefix comparison simply shortened with it.
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU'].join('\r\n'));
+  const cal = parseIcs(ics);
+  const g = buildSeriesGraph(cal, UID)!;
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+
+  const tampered = applySplit(cal, g, plan).calendar;
+  const master = tampered.children.find(
+    (c) => c.name === 'VEVENT' && getProp(c, 'UID')?.value === plan.newUid && !getProp(c, 'RECURRENCE-ID'),
+  )!;
+  master.props.find((p) => p.name === 'RRULE')!.value = 'FREQ=MONTHLY;BYMONTHDAY=3';
+
+  const report = validateStage(cal, tampered, g, plan);
+  assert.ok(!report.pass, 'a weekly series turned monthly must fail');
+  const check = report.checks.find((c) => c.id === 'rule-as-planned')!;
+  assert.ok(!check.pass);
+  assert.match(check.evidence, /Planned .*wrote/);
+});
+
+test('a slot cancelled twice over keeps its override', () => {
+  // An EXDATE and a STATUS:CANCELLED override on the same slot: the EXDATE
+  // branch discarded the override, which stayed behind on the truncated
+  // series along with its note and its reminder.
+  const ics = wrap(
+    ['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z', 'RRULE:FREQ=WEEKLY;BYDAY=TU',
+     'EXDATE:20260915T090000Z'].join('\r\n'),
+    ['BEGIN:VEVENT', `UID:${UID}`, 'DTSTAMP:20260901T000000Z',
+     'DTSTART:20260915T090000Z', 'DTEND:20260915T100000Z', 'RECURRENCE-ID:20260915T090000Z',
+     'STATUS:CANCELLED', 'SUMMARY:X', 'COMMENT:Called off twice over',
+     'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:n/a', 'TRIGGER:-PT30M', 'END:VALARM',
+     'END:VEVENT'].join('\r\n'),
+  );
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  const occ = g.occurrences.find((o) => o.slotMs === Date.UTC(2026, 8, 15, 9))!;
+  assert.equal(occ.kind, 'cancelled');
+  assert.ok(occ.override, 'the override is not discarded by the EXDATE branch');
+
+  const { plan, out, report } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(report!.pass, report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+  assert.match(out, /Called off twice over/, 'the note survives');
+  assert.doesNotMatch(out, /RECURRENCE-ID:20260915T090000Z/, 'and nothing is stranded');
+});
+
+test('extra parameters on date properties are kept', () => {
+  const ics = wrap(['DTSTART;X-ORIGIN=import:20260303T090000Z',
+                    'DTEND;X-END-META=y:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40',
+                    'EXDATE;X-CANCEL-REASON=holiday:20260922T090000Z'].join('\r\n'));
+  const { plan, out } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.match(out, /X-ORIGIN=import/, 'DTSTART keeps its extra parameter');
+  assert.match(out, /X-END-META=y/, 'DTEND keeps its extra parameter');
+  assert.match(out, /X-CANCEL-REASON=holiday/, 'EXDATE keeps its extra parameter');
+});
+
+test('a date that cannot exist is not quietly corrected', () => {
+  // Date.UTC rolls 30 February forward to 2 March without complaint, so a
+  // nonsense value was read as a plausible one and written back as a
+  // different day.
+  assert.equal(parseDateTime('20260230T090000Z'), null, '30 February is not a date');
+  assert.equal(parseDateTime('20261301T090000Z'), null, 'month 13 is not a date');
+  assert.equal(parseDateTime('20260101T250000Z'), null, 'hour 25 is not a time');
+  assert.equal(parseDateTime('20260229T090000Z'), null, '2026 is not a leap year, so 29 February is not a date');
+  assert.ok(parseDateTime('20280229T090000Z'), 'but 2028 is, so it is');
+
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40',
+                    'EXDATE:20260230T090000Z'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  assert.ok(g.unreadableDates.some((d) => /20260230/.test(d)), 'it is reported as unreadable');
+  const { plan } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(!plan.ok);
+  assert.ok(codes(plan).includes('UNREADABLE_DATE_VALUE'), codes(plan).join(','));
 });

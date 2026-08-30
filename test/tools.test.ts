@@ -71,7 +71,7 @@ test('commit is unreachable until validation has passed', async () => {
   assert.ok(!(await names()).includes('commit_staged_split'), 'staging alone does not unlock commit');
 
   const val = await call('validate_staged_split');
-  assert.match(val, /All 8 invariants hold/);
+  assert.match(val, /All 9 invariants hold/);
   assert.ok((await names()).includes('commit_staged_split'), 'commit appears once the result is proven');
 
   const done = await call('commit_staged_split');

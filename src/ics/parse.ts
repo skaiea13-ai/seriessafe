@@ -137,6 +137,22 @@ export function parseDateTime(raw: string, tzid?: string): IcsDateTime | null {
   const min = isDate ? 0 : +mm;
   const sec = isDate ? 0 : +ss;
 
+  /*
+   * Matching the shape is not the same as being a real date. `Date.UTC` rolls
+   * 30 February forward to 2 March without complaint, so a nonsense value was
+   * being read as a plausible one and written back as a different day. A value
+   * that does not survive the round trip is not a date this parser can read.
+   */
+  if (month > 11 || day < 1 || hour > 23 || min > 59 || sec > 60) return null;
+  const probe = new Date(Date.UTC(year, month, day, hour, min, sec));
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month ||
+    probe.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
   let ms: number;
   if (isUtc) {
     ms = Date.UTC(year, month, day, hour, min, sec);

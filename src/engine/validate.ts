@@ -404,7 +404,42 @@ export function validateStage(
     }
   }
 
-  // 8. Nothing else in the file was touched.
+  // 8. The rule written out is the rule that was planned.
+  {
+    const writtenMaster = reparsed.children.find(
+      (c) =>
+        c.name === 'VEVENT' &&
+        (getProp(c, 'UID')?.value ?? '') === plan.newUid &&
+        !getProp(c, 'RECURRENCE-ID'),
+    );
+    const writtenRule = writtenMaster?.props.find((p) => p.name === 'RRULE')?.value ?? '';
+    const writtenStart = writtenMaster ? (getProp(writtenMaster, 'DTSTART')?.value ?? '') : '';
+    const wantStart = formatLike(before, plan.newDtstartMs);
+
+    /*
+     * Comparing occurrence counts cannot see a rule that changed shape:
+     * rewriting an open-ended weekly rule as FREQ=MONTHLY produced far fewer
+     * meetings, and the equal-length prefix comparison simply shortened with
+     * it. The written rule is therefore compared to the planned one directly.
+     */
+    const norm = (r: string) => r.split(';').map((x) => x.trim().toUpperCase()).sort().join(';');
+    const ruleMatches = norm(writtenRule) === norm(plan.newRuleText);
+    const startMatches = writtenStart === wantStart;
+    checks.push({
+      id: 'rule-as-planned',
+      title: 'The recurrence written out is the one that was planned',
+      pass: Boolean(writtenMaster) && ruleMatches && startMatches,
+      evidence: !writtenMaster
+        ? 'The new series master is missing.'
+        : !ruleMatches
+        ? `Planned ${plan.newRuleText}, wrote ${writtenRule || '(none)'}.`
+        : !startMatches
+        ? `Planned a start of ${wantStart}, wrote ${writtenStart || '(none)'}.`
+        : `${writtenRule} starting ${writtenStart}, exactly as planned.`,
+    });
+  }
+
+  // 9. Nothing else in the file was touched.
   {
     // Everything that is not part of this series: other events *and* the
     // calendar's other components, such as the VTIMEZONE definitions the
