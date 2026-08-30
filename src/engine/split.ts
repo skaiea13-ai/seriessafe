@@ -383,7 +383,7 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
       code: 'END_DATE_DROPS_MEETINGS',
       message:
         `Keeping the original end date leaves ${neededCount - newSlots.length} fewer meeting(s), ` +
-        `because the last ${(params.byday ?? graph.rule.byday).join('/')} falls before the old end date.`,
+        `because the last ${dayWords(params.byday ?? graph.rule.byday)} falls before the old end date.`,
       remedy: 'Use the "preserve-count" end policy, or choose a later end date.',
     });
   }
@@ -413,6 +413,18 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
 }
 
 const DAY_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+
+const DAY_NAMES: Record<string, string> = {
+  SU: 'Sunday', MO: 'Monday', TU: 'Tuesday', WE: 'Wednesday',
+  TH: 'Thursday', FR: 'Friday', SA: 'Saturday',
+};
+
+/** Turn BYDAY codes into words, for messages a person reads. */
+function dayWords(codes: string[]): string {
+  const names = codes.map((c) => DAY_NAMES[c.replace(/^[+-]?\d+/, '').toUpperCase()] ?? c);
+  if (names.length <= 1) return names[0] ?? 'day';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
 
 /**
  * The start of the week an instant belongs to, in the series' own zone,
