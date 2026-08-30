@@ -144,7 +144,11 @@ export function parseDateTime(raw: string, tzid?: string): IcsDateTime | null {
    * that does not survive the round trip is not a date this parser can read.
    */
   if (month > 11 || day < 1 || hour > 23 || min > 59 || sec > 60) return null;
-  const probe = new Date(Date.UTC(year, month, day, hour, min, sec));
+  // RFC 5545 permits second 60 for a leap second. JavaScript has no such
+  // instant and rolls it into the next minute, so it is clamped rather than
+  // rejected — the value is legal, and clamping keeps it on its own day.
+  const secForProbe = sec === 60 ? 59 : sec;
+  const probe = new Date(Date.UTC(year, month, day, hour, min, secForProbe));
   if (
     probe.getUTCFullYear() !== year ||
     probe.getUTCMonth() !== month ||
@@ -155,12 +159,12 @@ export function parseDateTime(raw: string, tzid?: string): IcsDateTime | null {
 
   let ms: number;
   if (isUtc) {
-    ms = Date.UTC(year, month, day, hour, min, sec);
+    ms = Date.UTC(year, month, day, hour, min, secForProbe);
   } else if (tzid) {
-    ms = zonedToUtc(year, month, day, hour, min, sec, tzid);
+    ms = zonedToUtc(year, month, day, hour, min, secForProbe, tzid);
   } else {
     // Floating time: treat the wall clock as UTC so arithmetic stays stable.
-    ms = Date.UTC(year, month, day, hour, min, sec);
+    ms = Date.UTC(year, month, day, hour, min, secForProbe);
   }
   return { ms, isDate, isUtc, tzid, raw: raw.trim() };
 }

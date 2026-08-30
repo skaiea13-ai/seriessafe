@@ -492,6 +492,14 @@ test('a date that cannot exist is not quietly corrected', () => {
   assert.equal(parseDateTime('20260229T090000Z'), null, '2026 is not a leap year, so 29 February is not a date');
   assert.ok(parseDateTime('20280229T090000Z'), 'but 2028 is, so it is');
 
+  // Rejecting malformed dates must not reject legal ones. RFC 5545 allows a
+  // leap second, which JavaScript rolls into the next minute; it is clamped
+  // rather than thrown out.
+  const leap = parseDateTime('20260630T235960Z');
+  assert.ok(leap, 'a leap second is a legal value');
+  assert.equal(new Date(leap!.ms).getUTCDate(), 30, 'and stays on its own day');
+  assert.ok(parseDateTime('20260101'), 'a plain DATE is still read');
+
   const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
                     'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40',
                     'EXDATE:20260230T090000Z'].join('\r\n'));
