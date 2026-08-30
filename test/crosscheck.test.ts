@@ -590,3 +590,57 @@ test('the comparison distinguishes two overrides that look alike', () => {
   assert.equal(custom.inSeriesSafe, true, 'SeriesSafe keeps it');
   assert.equal(custom.inConventional, false, 'and its past twin must not stand in for it');
 });
+
+/* ---- fifth review round -------------------------------------------- */
+
+test('every date entry at one instant is carried, not just the first', () => {
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60',
+                    'EXDATE;X-WHY=A:20260915T090000Z',
+                    'EXDATE;X-WHY=B:20260915T090000Z'].join('\r\n'));
+  const { plan, out } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.match(out, /X-WHY=A/, 'the first reason survives');
+  assert.match(out, /X-WHY=B/, 'and so does the second at the same instant');
+});
+
+test('a quoted parameter value is not confused with two values', () => {
+  // Flattening parameters into text made X-P="a,b" — one value containing a
+  // comma — collide with X-P=a,b, two values, dropping one of the meanings.
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60',
+                    'EXDATE;X-P="a,b":20260915T090000Z',
+                    'EXDATE;X-P=a,b:20260922T090000Z'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  assert.deepEqual(g.exdateEntries.map((e) => e.params[0].values), [['a,b'], ['a', 'b']],
+    'the two are parsed as different things');
+  const { plan, out } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.match(out, /X-P="a,b"/, 'the single quoted value survives');
+  assert.match(out, /X-P=a,b[:;]/, 'and so does the pair');
+});
+
+test('an unreadable anchor on a customised occurrence stops the operation', () => {
+  // A RECURRENCE-ID that cannot be parsed is invisible to every later step,
+  // and would simply be left behind on the truncated series.
+  const ics = wrap(
+    ['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z', 'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60'].join('\r\n'),
+    ['BEGIN:VEVENT', `UID:${UID}`, 'DTSTAMP:20260901T000000Z',
+     'DTSTART:20260915T090000Z', 'DTEND:20260915T100000Z',
+     'RECURRENCE-ID:20260230T090000Z', 'SUMMARY:Bad anchor', 'END:VEVENT'].join('\r\n'),
+  );
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  assert.ok(g.unreadableDates.some((d) => /RECURRENCE-ID/.test(d)));
+  const { plan } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(!plan.ok);
+  assert.ok(codes(plan).includes('UNREADABLE_DATE_VALUE'), codes(plan).join(','));
+});
+
+test('the effective date is held to the same standard as any other date', () => {
+  assert.equal(startOfDayInZone('2026-02-30'), null, '30 February is not a date to split on');
+  assert.equal(startOfDayInZone('2026-13-01'), null, 'nor is month 13');
+  const early = startOfDayInZone('0096-02-29');
+  assert.ok(early, 'a four-digit year below 0100 is legal');
+  assert.equal(new Date(early!).getUTCFullYear(), 96, 'and is not mapped into the 1900s');
+  assert.ok(startOfDayInZone('2026-09-01', 'Asia/Seoul'), 'ordinary dates still work');
+});

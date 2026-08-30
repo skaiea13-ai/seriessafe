@@ -303,5 +303,9 @@ export function startOfDayInZone(input: string, tzid?: string): number | null {
     return Number.isFinite(t) ? t : null;
   }
   const [, y, mo, d] = m;
-  return tzid ? zonedToUtc(+y, +mo - 1, +d, 0, 0, 0, tzid) : Date.UTC(+y, +mo - 1, +d);
+  // Validated through the same parser as any other date, so 30 February is
+  // rejected rather than quietly becoming 2 March, and year 0096 stays in the
+  // first century instead of being mapped into the 1900s.
+  if (!parseDateTime(`${y}${mo}${d}`)) return null;
+  return tzid ? zonedToUtc(+y, +mo - 1, +d, 0, 0, 0, tzid) : utcOf(+y, +mo - 1, +d);
 }

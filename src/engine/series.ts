@@ -186,7 +186,6 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   if (rruleProps[0].value.includes('UNTIL=') && rule.until === undefined) {
     unreadableFixed.push(`RRULE UNTIL in ${rruleProps[0].value}`);
   }
-  const unreadableDates = [...ex.unreadable, ...rd.unreadable, ...unreadableFixed];
 
   // Every date-bearing property carries its own TZID, and an unresolvable one
   // anywhere makes that instant a guess — not only on DTSTART.
@@ -206,6 +205,15 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
     noteZone(getParam(rid, 'TZID'), 'RECURRENCE-ID');
     const dt = parseDateTime(rid.value, getParam(rid, 'TZID') ?? tzid);
     if (dt) overrides.set(dt.ms, ev);
+    // An override whose anchor cannot be read is invisible to every later
+    // step, and would simply be left behind on the truncated series.
+    else unreadableFixed.push(`RECURRENCE-ID:${rid.value}`);
+    for (const nameOf of ['DTSTART', 'DTEND'] as const) {
+      const p = getProp(ev, nameOf);
+      if (p && !parseDateTime(p.value, getParam(p, 'TZID') ?? tzid)) {
+        unreadableFixed.push(`${nameOf}:${p.value} on a customised occurrence`);
+      }
+    }
   }
 
   // Materialize the occurrence list.
@@ -317,7 +325,8 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
     overrides,
     occurrences,
     timeZoneUnresolved,
-    unreadableDates,
+    // Composed here so every contributor above has already reported.
+    unreadableDates: [...ex.unreadable, ...rd.unreadable, ...unreadableFixed],
     unbounded,
     truncated,
     modelledUntilMs: horizon ?? (ruleSlots.length ? ruleSlots[ruleSlots.length - 1] : dtstart.ms),

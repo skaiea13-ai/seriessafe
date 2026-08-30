@@ -43,7 +43,14 @@ function dateListProps(
   const groups = new Map<string, { params: Param[]; values: number[] }>();
   for (const e of entries) {
     const extra = e.params.filter((p) => p.name !== 'VALUE' && p.name !== 'TZID');
-    const key = extra.map((p) => `${p.name}=${[...p.values].sort().join(',')}`).sort().join(';');
+    /*
+     * Serialized as nested structure rather than joined text. Flattening with
+     * separators made `X-P="a,b"` — one value containing a comma — collide
+     * with `X-P=a,b`, two values, so one of the two meanings was dropped.
+     */
+    const key = JSON.stringify(
+      extra.map((p) => [p.name, [...p.values].sort()]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    );
     const g = groups.get(key);
     if (g) g.values.push(e.ms);
     else groups.set(key, { params: e.params, values: [e.ms] });
@@ -134,15 +141,23 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   getProps(newMaster, 'RRULE')[0].value = plan.newRuleText;
 
   // Re-anchored cancellations and extra dates.
-  // Each re-anchored value keeps the parameters it arrived on.
-  const paramsAt = (entries: DateEntry[], ms: number) =>
-    entries.find((e) => e.ms === ms)?.params ?? [];
+  /*
+   * Every entry at an instant is carried, not just the first. A date can be
+   * listed more than once with different parameters, and taking only the first
+   * match silently dropped the rest.
+   */
+  const carryAll = (entries: DateEntry[], oldMs: number, newMs: number): DateEntry[] => {
+    const matches = entries.filter((e) => e.ms === oldMs);
+    return matches.length
+      ? matches.map((e) => ({ ms: newMs, params: e.params }))
+      : [{ ms: newMs, params: [] }];
+  };
   const newEx: DateEntry[] = plan.remaps
     .filter((r) => r.kind === 'cancellation')
-    .map((r) => ({ ms: r.newSlotMs, params: paramsAt(graph.exdateEntries, r.oldSlotMs) }));
+    .flatMap((r) => carryAll(graph.exdateEntries, r.oldSlotMs, r.newSlotMs));
   const newRd: DateEntry[] = plan.remaps
     .filter((r) => r.kind === 'extra')
-    .map((r) => ({ ms: r.newSlotMs, params: paramsAt(graph.rdateEntries, r.oldSlotMs) }));
+    .flatMap((r) => carryAll(graph.rdateEntries, r.oldSlotMs, r.newSlotMs));
   newMaster.props.push(...dateListProps('EXDATE', newEx, graph));
   newMaster.props.push(...dateListProps('RDATE', newRd, graph));
   newMaster.props.push({
