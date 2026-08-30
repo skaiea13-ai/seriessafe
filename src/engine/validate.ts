@@ -1,5 +1,5 @@
 import { type Component, type Prop, getProp, getParam } from '../ics/types.ts';
-import { parseIcs, parseDateTime } from '../ics/parse.ts';
+import { parseIcs, parseDateTime, isKnownTimeZone } from '../ics/parse.ts';
 import { serializeIcs } from '../ics/serialize.ts';
 import { buildSeriesGraph, formatLike, type SeriesGraph } from './series.ts';
 import { parseRRule } from './rrule.ts';
@@ -19,6 +19,28 @@ export interface ValidationReport {
   /** Items a conventional edit would have destroyed, confirmed still present. */
   preservedCount: number;
   checkedAt: number;
+}
+
+/**
+ * The form a date property was written in, beyond the instant it resolves to.
+ *
+ * Two properties can name the same instant today and diverge later: dropping
+ * `TZID=Europe/London` from a November date leaves the same moment but a
+ * different rule. Comparing instants alone let that through, so the value kind
+ * and zone are part of the identity.
+ */
+function dateForm(p: Prop): string {
+  const value = (getParam(p, 'VALUE') ?? '').toUpperCase();
+  const tzid = getParam(p, 'TZID') ?? '';
+  const utc = /Z$/.test(p.value.split(',')[0] ?? '') ? 'UTC' : '';
+  return `${value}|${tzid}|${utc}`;
+}
+
+/** The form this series' rewritten date properties must take. */
+function expectedForm(g: SeriesGraph): string {
+  if (g.isDate) return 'DATE||';
+  if (g.isUtc) return '||UTC';
+  return `|${g.tzid ?? ''}|`;
 }
 
 /** A property's full identity: name, value, and parameters in order. */
@@ -163,19 +185,14 @@ export function validateStage(
     else {
       // Compared with parameters, and by multiplicity, so a duplicated or
       // subtly altered property cannot pass as present.
-      const bag = (c: Component) => {
-        const m = new Map<string, number>();
-        for (const p of c.props) {
-          if (REWRITTEN.includes(p.name)) continue;
-          const k = `${p.name}[${p.params.map((x) => `${x.name}=${[...x.values].sort().join(',')}`).sort().join(';')}]=${p.value}`;
-          m.set(k, (m.get(k) ?? 0) + 1);
-        }
-        return m;
-      };
-      const wanted = bag(before.master);
-      const found = bag(oldMasterAfter);
+      const skipOld = (n: string) => REWRITTEN.includes(n);
+      const wanted = propCounts(before.master.props, skipOld);
+      const found = propCounts(oldMasterAfter.props, skipOld);
       for (const [k, n] of wanted) {
-        if ((found.get(k) ?? 0) !== n) contentProblems.push(`${k.split('[')[0]} lost or altered on the original series`);
+        if ((found.get(k) ?? 0) !== n) contentProblems.push(`${k.split('|')[0]} lost or altered on the original series`);
+      }
+      for (const [k, n] of found) {
+        if ((wanted.get(k) ?? 0) !== n) contentProblems.push(`${k.split('|')[0]} was added to the original series`);
       }
       const alarmsA = before.master.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
       const alarmsB = oldMasterAfter.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
@@ -304,6 +321,9 @@ export function validateStage(
         if ((gotOv.get(k) ?? 0) !== n) problems.push(`${k.split('|')[0]} lost or altered on the ${fmt(r.oldSlotMs)} occurrence`);
         else carried += n;
       }
+      for (const [k, n] of gotOv) {
+        if ((wantOv.get(k) ?? 0) !== n) problems.push(`${k.split('|')[0]} was added to the ${fmt(r.oldSlotMs)} occurrence`);
+      }
       const srcAlarms = src.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
       const dstAlarms = dst.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
       if (srcAlarms.join('|') !== dstAlarms.join('|')) {
@@ -324,6 +344,11 @@ export function validateStage(
         if ((gotM.get(k) ?? 0) !== n) problems.push(`${k.split('|')[0]} lost or altered on the new series`);
         else carried += n;
       }
+      // And the other way: a property that appeared from nowhere is a change
+      // too. Adding STATUS:CANCELLED to the new series used to pass.
+      for (const [k, n] of gotM) {
+        if ((wantM.get(k) ?? 0) !== n) problems.push(`${k.split('|')[0]} was added to the new series`);
+      }
 
       /*
        * DTSTART and DTEND are rewritten, so they are excluded above — which
@@ -332,12 +357,36 @@ export function validateStage(
        * class into a four-hour one, both with every check green. They are
        * compared as resolved instants, not as text.
        */
-      const resolved = (p: Prop | undefined) =>
-        p ? parseDateTime(p.value, getParam(p, 'TZID') ?? undefined)?.ms ?? null : null;
-      const gotStart = resolved(getProp(newMaster, 'DTSTART'));
+      const wantForm = expectedForm(before);
+      const resolved = (p: Prop | undefined) => {
+        if (!p) return null;
+        const tz = getParam(p, 'TZID');
+        if (tz && !isKnownTimeZone(tz)) return null;
+        return parseDateTime(p.value, tz ?? undefined)?.ms ?? null;
+      };
+      const startProp2 = getProp(newMaster, 'DTSTART');
+      const gotStart = resolved(startProp2);
       if (gotStart !== plan.newDtstartMs) {
         contentProblemsOfStart.push(
           `the new series starts at ${gotStart === null ? '(unreadable)' : fmt(gotStart)}, not ${fmt(plan.newDtstartMs)}`,
+        );
+      } else if (startProp2 && dateForm(startProp2) !== wantForm) {
+        contentProblemsOfStart.push('the start was written in a different time-zone or value form than the series uses');
+      }
+
+      /*
+       * The way an event states its length is part of it: DTEND, DURATION, or
+       * neither. Checking DTEND only when present meant deleting it passed.
+       */
+      const hadEnd = Boolean(getProp(before.master, 'DTEND'));
+      const hadDuration = Boolean(getProp(before.master, 'DURATION'));
+      const hasEnd = Boolean(getProp(newMaster, 'DTEND'));
+      const hasDuration = Boolean(getProp(newMaster, 'DURATION'));
+      if (hadEnd !== hasEnd || hadDuration !== hasDuration) {
+        contentProblemsOfStart.push(
+          `the new series states its length differently: ` +
+            `${hadEnd ? 'DTEND' : hadDuration ? 'DURATION' : 'neither'} became ` +
+            `${hasEnd ? 'DTEND' : hasDuration ? 'DURATION' : 'neither'}`,
         );
       }
       const dtendProp = getProp(newMaster, 'DTEND');
@@ -348,6 +397,8 @@ export function validateStage(
           contentProblemsOfStart.push(
             `each meeting would run to ${gotEnd === null ? '(unreadable)' : fmt(gotEnd)} instead of ${fmt(wantEnd)}`,
           );
+        } else if (dateForm(dtendProp) !== wantForm) {
+          contentProblemsOfStart.push('the end was written in a different time-zone or value form than the series uses');
         }
       }
       const a = before.master.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
@@ -375,11 +426,17 @@ export function validateStage(
       const master = reparsed.children.find(
         (c) => c.name === 'VEVENT' && (getProp(c, 'UID')?.value ?? '') === uid && !getProp(c, 'RECURRENCE-ID'),
       );
-      const out: Array<{ ms: number | null; key: string }> = [];
+      const out: Array<{ ms: number | null; key: string; form: string; zoneOk: boolean }> = [];
       for (const p of master?.props.filter((x) => x.name === name) ?? []) {
         const tz = getParam(p, 'TZID');
+        const zoneOk = !tz || isKnownTimeZone(tz);
         for (const v of p.value.split(',')) {
-          out.push({ ms: parseDateTime(v, tz)?.ms ?? null, key: paramKey(p.params) });
+          out.push({
+            ms: zoneOk ? parseDateTime(v, tz)?.ms ?? null : null,
+            key: paramKey(p.params),
+            form: dateForm(p),
+            zoneOk,
+          });
         }
       }
       return out;
@@ -395,8 +452,9 @@ export function validateStage(
         const target = moved ? newOut : oldOut;
         const wantMs = moved ? moved.newSlotMs : e.ms;
         const want = paramKey(e.params);
-        if (!target.some((o) => o.ms === wantMs && o.key === want)) {
-          problems.push(`${name} for ${fmt(e.ms)} lost its entry, its time zone or its parameters`);
+        const wantShape = expectedForm(before);
+        if (!target.some((o) => o.ms === wantMs && o.key === want && o.form === wantShape && o.zoneOk)) {
+          problems.push(`${name} for ${fmt(e.ms)} lost its entry, its time zone, its value type or its parameters`);
         } else carried++;
       }
     }

@@ -775,3 +775,62 @@ test('tampering that moves times or loses data is caught, in five shapes', () =>
     assert.ok(!validateStage(cal, damaged, g, plan).pass, `${label} must fail validation`);
   }
 });
+
+/* ---- eighth review round ------------------------------------------- */
+
+test('a date written in a different form is caught, even at the same instant', () => {
+  /*
+   * Two date properties can name the same instant today and diverge later.
+   * Dropping TZID=Europe/London from a November date leaves the same moment
+   * and a different rule; so does swapping London for Abidjan, which agrees
+   * with it in winter and not in summer. Comparing instants alone passed all
+   * nine checks on both.
+   */
+  const london = ['DTSTART;TZID=Europe/London:20260303T190000',
+                  'DTEND;TZID=Europe/London:20260303T200000',
+                  'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261229T190000Z'];
+  const build = (body: string[]) =>
+    ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//r8//EN', 'BEGIN:VEVENT', `UID:${UID}`,
+     'DTSTAMP:20260101T000000Z', ...body, 'SUMMARY:R', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n') + '\r\n';
+  const masterOf = (cal: any, uid: string) =>
+    cal.children.find((e: any) => e.name === 'VEVENT' && getProp(e, 'UID')?.value === uid && !getProp(e, 'RECURRENCE-ID'));
+
+  const cases: Array<[string, string[], (cal: any, plan: any) => void]> = [
+    ['an RDATE loses its zone', [...london, 'RDATE;TZID=Europe/London:20261111T190000'], (cal, plan) => {
+      const r = masterOf(cal, plan.newUid).props.find((x: any) => x.name === 'RDATE');
+      r.params = r.params.filter((x: any) => x.name !== 'TZID');
+    }],
+    ['the zone is swapped for one that agrees today', london, (cal, plan) => {
+      getProp(masterOf(cal, plan.newUid), 'DTSTART')!.params = [{ name: 'TZID', values: ['Africa/Abidjan'] }];
+    }],
+    ['an all-day series loses VALUE=DATE',
+      ['DTSTART;VALUE=DATE:20260303', 'DTEND;VALUE=DATE:20260304', 'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60'],
+      (cal, plan) => {
+        const m = masterOf(cal, plan.newUid);
+        for (const n of ['DTSTART', 'DTEND']) getProp(m, n)!.params = [];
+      }],
+    ['a zone nobody can resolve appears', [...london, 'RDATE;TZID=Europe/London:20261111T190000'], (cal, plan) => {
+      masterOf(cal, plan.newUid).props.find((x: any) => x.name === 'RDATE').params =
+        [{ name: 'TZID', values: ['Mars/Olympus'] }];
+    }],
+    ['the end time is deleted outright', london, (cal, plan) => {
+      const m = masterOf(cal, plan.newUid);
+      m.props = m.props.filter((x: any) => x.name !== 'DTEND');
+    }],
+    ['a property appears from nowhere', london, (cal, plan) => {
+      masterOf(cal, plan.newUid).props.push({ name: 'STATUS', params: [], value: 'CANCELLED' });
+    }],
+  ];
+
+  for (const [label, body, damage] of cases) {
+    const cal = parseIcs(build(body));
+    const g = buildSeriesGraph(cal, UID)!;
+    const plan = simulateSplit(g, { effectiveFromMs: startOfDayInZone('2026-09-01', g.tzid)!, byday: ['TH'] });
+    assert.ok(plan.ok, `${label}: ${JSON.stringify(plan.refusals)}`);
+    assert.ok(validateStage(cal, applySplit(cal, g, plan).calendar, g, plan).pass,
+      `${label}: the honest result must still pass`);
+    const damaged = applySplit(cal, g, plan).calendar;
+    damage(damaged, plan);
+    assert.ok(!validateStage(cal, damaged, g, plan).pass, `${label} must fail validation`);
+  }
+});
