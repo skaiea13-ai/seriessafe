@@ -509,3 +509,84 @@ test('a date that cannot exist is not quietly corrected', () => {
   assert.ok(!plan.ok);
   assert.ok(codes(plan).includes('UNREADABLE_DATE_VALUE'), codes(plan).join(','));
 });
+
+/* ---- fourth review round ------------------------------------------- */
+
+test('a slot cancelled by both an EXDATE and an override keeps both', () => {
+  // Collapsing the two into a single override remap dropped the EXDATE line
+  // and the parameters riding on it.
+  const ics = wrap(
+    ['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z', 'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40',
+     'EXDATE;X-CANCEL-SOURCE=registrar:20260915T090000Z'].join('\r\n'),
+    ['BEGIN:VEVENT', `UID:${UID}`, 'DTSTAMP:20260901T000000Z',
+     'DTSTART:20260915T090000Z', 'DTEND:20260915T100000Z', 'RECURRENCE-ID:20260915T090000Z',
+     'STATUS:CANCELLED', 'SUMMARY:X', 'COMMENT:Called off by the registrar', 'END:VEVENT'].join('\r\n'),
+  );
+  const { plan, out, report } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(report!.pass, report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+  assert.match(out, /Called off by the registrar/, 'the override survives');
+  assert.match(out, /X-CANCEL-SOURCE=registrar/, 'and so does the EXDATE parameter');
+});
+
+test('date values on different properties keep their own parameters', () => {
+  // Flattening every value into one property applied the first parameter set
+  // to all of them.
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60',
+                    'EXDATE;X-WHY=past:20260505T090000Z',
+                    'EXDATE;X-WHY=future:20260922T090000Z'].join('\r\n'));
+  const { plan, out } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.match(out, /X-WHY=past/, 'the earlier reason survives');
+  assert.match(out, /X-WHY=future/, 'and so does the later one');
+});
+
+test('an unreadable DTEND or UNTIL stops the operation', () => {
+  // An unreadable DTEND produced a zero-length event; an unreadable UNTIL
+  // turned a bounded series endless. Both passed every check.
+  const badEnd = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260230T100000Z',
+                       'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40'].join('\r\n'));
+  const g1 = buildSeriesGraph(parseIcs(badEnd), UID)!;
+  assert.ok(g1.unreadableDates.some((d) => /DTEND/.test(d)));
+  assert.ok(!attempt(badEnd, Date.UTC(2026, 8, 1), ['TH']).plan.ok);
+
+  const badUntil = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                         'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20260230T090000Z'].join('\r\n'));
+  const g2 = buildSeriesGraph(parseIcs(badUntil), UID)!;
+  assert.ok(g2.unreadableDates.some((d) => /UNTIL/.test(d)), 'the bad UNTIL is reported');
+  const p2 = attempt(badUntil, Date.UTC(2026, 8, 1), ['TH']).plan;
+  assert.ok(!p2.ok);
+  assert.ok(codes(p2).includes('UNREADABLE_DATE_VALUE'), codes(p2).join(','));
+});
+
+test('a four-digit year below 0100 is not shifted into the 1900s', () => {
+  // Date.UTC maps years 0-99 onto 1900-1999; RFC 5545 writes four digits.
+  const early = parseDateTime('00960229');
+  assert.ok(early, 'year 0096 is a legal value');
+  assert.equal(new Date(early!.ms).getUTCFullYear(), 96);
+});
+
+test('the comparison distinguishes two overrides that look alike', () => {
+  // A past override deliberately sharing a summary and start with a future one
+  // was accepted as its replacement.
+  const ics = wrap(
+    ['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+     'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261229T090000Z'].join('\r\n'),
+    [['BEGIN:VEVENT', `UID:${UID}`, 'DTSTAMP:20260401T000000Z',
+      'DTSTART:20260407T110000Z', 'DTEND:20260407T120000Z', 'RECURRENCE-ID:20260407T090000Z',
+      'SUMMARY:Twin', 'X-MARKER:PAST', 'END:VEVENT'].join('\r\n'),
+     ['BEGIN:VEVENT', `UID:${UID}`, 'DTSTAMP:20260901T000000Z',
+      'DTSTART:20260407T110000Z', 'DTEND:20260407T120000Z', 'RECURRENCE-ID:20260915T090000Z',
+      'SUMMARY:Twin', 'X-MARKER:FUTURE', 'END:VEVENT'].join('\r\n')].join('\r\n'),
+  );
+  const cal = parseIcs(ics);
+  const g = buildSeriesGraph(cal, UID)!;
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  const cmp = compareResults(g, plan, applySplit(cal, g, plan).calendar, applyNaive(cal, g, plan).calendar);
+  const custom = cmp.items.find((i) => i.what === 'Customised meeting')!;
+  assert.ok(custom, 'the future override is compared');
+  assert.equal(custom.inSeriesSafe, true, 'SeriesSafe keeps it');
+  assert.equal(custom.inConventional, false, 'and its past twin must not stand in for it');
+});

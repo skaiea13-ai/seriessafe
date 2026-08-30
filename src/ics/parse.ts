@@ -117,6 +117,17 @@ export function parseIcs(text: string): Component {
 const DT_RE = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/;
 
 /**
+ * `Date.UTC` maps years 0-99 onto 1900-1999. RFC 5545 writes the year as four
+ * digits, so year 0096 is a legal value that must not be silently moved.
+ */
+function utcOf(y: number, mo: number, d: number, h = 0, mi = 0, s = 0): number {
+  const dt = new Date(0);
+  dt.setUTCFullYear(y, mo, d);
+  dt.setUTCHours(h, mi, s, 0);
+  return dt.getTime();
+}
+
+/**
  * Parse an RFC 5545 DATE or DATE-TIME literal.
  *
  * Local (floating) and TZID-qualified times are anchored to UTC using the
@@ -148,7 +159,7 @@ export function parseDateTime(raw: string, tzid?: string): IcsDateTime | null {
   // instant and rolls it into the next minute, so it is clamped rather than
   // rejected — the value is legal, and clamping keeps it on its own day.
   const secForProbe = sec === 60 ? 59 : sec;
-  const probe = new Date(Date.UTC(year, month, day, hour, min, secForProbe));
+  const probe = new Date(utcOf(year, month, day, hour, min, secForProbe));
   if (
     probe.getUTCFullYear() !== year ||
     probe.getUTCMonth() !== month ||
@@ -159,12 +170,12 @@ export function parseDateTime(raw: string, tzid?: string): IcsDateTime | null {
 
   let ms: number;
   if (isUtc) {
-    ms = Date.UTC(year, month, day, hour, min, secForProbe);
+    ms = utcOf(year, month, day, hour, min, secForProbe);
   } else if (tzid) {
     ms = zonedToUtc(year, month, day, hour, min, secForProbe, tzid);
   } else {
     // Floating time: treat the wall clock as UTC so arithmetic stays stable.
-    ms = Date.UTC(year, month, day, hour, min, secForProbe);
+    ms = utcOf(year, month, day, hour, min, secForProbe);
   }
   return { ms, isDate, isUtc, tzid, raw: raw.trim() };
 }
@@ -195,7 +206,7 @@ export function zonedToUtc(
   sec: number,
   tzid: string,
 ): number {
-  const naive = Date.UTC(year, month, day, hour, min, sec);
+  const naive = utcOf(year, month, day, hour, min, sec);
   const t1 = naive - tzOffsetMs(naive, tzid);
   const t2 = naive - tzOffsetMs(t1, tzid);
 

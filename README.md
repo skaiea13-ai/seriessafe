@@ -149,11 +149,11 @@ Both themes currently report zero contrast failures, no touch target under 24px,
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
-Fifty tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+Fifty-five tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
 
 ```bash
 npm install
-npm test              # 50 unit and integration tests
+npm test              # 55 unit and integration tests
 npm run test:sweep    # 405 legitimate open-ended moves, none refused
 npm run test:webmcp   # 34 checks against real Chrome WebMCP (macOS, Chrome 149+)
 npm run test:a11y     # contrast, targets, focus, overflow — both themes

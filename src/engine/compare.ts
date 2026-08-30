@@ -88,20 +88,38 @@ export function compareResults(
        * starts at that moment" let an unrelated past override of the same
        * series stand in for a destroyed future one.
        */
-      const wantedSummary = getProp(occ.override!, 'SUMMARY')?.value ?? '';
-      const wantedStart = getProp(occ.override!, 'DTSTART')?.value ?? '';
-      const survives = (evs: Component[]) =>
-        evs.some(
-          (e) =>
-            (getProp(e, 'SUMMARY')?.value ?? '') === wantedSummary &&
-            (getProp(e, 'DTSTART')?.value ?? '') === wantedStart,
-        );
+      /*
+       * Identity is the whole component, minus the fields this operation is
+       * allowed to rewrite. Matching on summary and start let a *past*
+       * override of the same series — deliberately given the same summary and
+       * start in a test — stand in for a destroyed future one.
+       */
+      // Fields this operation is entitled to rewrite or add, including the
+      // breadcrumb SeriesSafe leaves on anything it re-anchors.
+      const REWRITABLE = new Set([
+        'UID', 'RECURRENCE-ID', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED',
+        'X-SERIESSAFE-REANCHORED-FROM', 'X-SERIESSAFE-SPLIT-FROM',
+      ]);
+      const identity = (e: Component) => {
+        const props = e.props
+          .filter((p) => !REWRITABLE.has(p.name))
+          .map((p) => `${p.name}[${p.params.map((x) => `${x.name}=${[...x.values].sort().join(',')}`).sort().join(';')}]=${p.value}`)
+          .sort()
+          .join('|');
+        const kids = e.children
+          .map((c) => `${c.name}:${c.props.map((p) => `${p.name}=${p.value}`).sort().join(',')}`)
+          .sort()
+          .join('&');
+        return `${props}(${kids})`;
+      };
+      const wanted = identity(occ.override!);
+      const survives = (evs: Component[]) => evs.some((e) => identity(e) === wanted);
       items.push({
         what: 'Customised meeting',
         when,
         inSeriesSafe: survives(safeOverrides),
         inConventional: survives(naiveOverrides),
-        detail: `"${wantedSummary || 'that meeting'}" with its own time, place and guests`,
+        detail: `"${getProp(occ.override!, 'SUMMARY')?.value || 'that meeting'}" with its own time, place and guests`,
       });
       continue;
     }

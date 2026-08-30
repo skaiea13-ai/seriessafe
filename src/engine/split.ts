@@ -394,6 +394,18 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
         keptStartMs: occ.startMs,
         carried: [...new Set(carried)],
       });
+      // The same slot may *also* carry an EXDATE, with parameters of its own.
+      // Collapsing the two into one override dropped that line entirely.
+      if (graph.exdates.includes(occ.slotMs)) {
+        remaps.push({
+          kind: 'cancellation',
+          ordinal,
+          oldSlotMs: occ.slotMs,
+          newSlotMs: target,
+          label: labelOf(occ, graph),
+          carried: ['EXDATE'],
+        });
+      }
     } else if (occ.kind === 'cancelled') {
       remaps.push({
         kind: 'cancellation',

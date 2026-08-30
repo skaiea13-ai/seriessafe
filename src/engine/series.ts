@@ -28,6 +28,12 @@ export interface Occurrence {
   note?: string;
 }
 
+/** One value from an EXDATE/RDATE list, with the parameters it travelled on. */
+export interface DateEntry {
+  ms: number;
+  params: Param[];
+}
+
 export interface SeriesGraph {
   uid: string;
   master: Component;
@@ -43,6 +49,9 @@ export interface SeriesGraph {
   exdates: number[];
   /** Extra slot instants taken from RDATE. */
   rdates: number[];
+  /** The same values with the parameters each arrived on. */
+  exdateEntries: DateEntry[];
+  rdateEntries: DateEntry[];
   /** Detached overrides keyed by their RECURRENCE-ID instant. */
   overrides: Map<number, Component>;
   occurrences: Occurrence[];
@@ -91,8 +100,13 @@ function textOf(c: Component, name: string): string {
  * `RDATE;VALUE=PERIOD` was silently ignored, leaving the model with no record
  * of it, and the writer then dropped the property entirely.
  */
-function collectDateList(props: Prop[]): { instants: number[]; unreadable: string[]; zones: string[] } {
-  const instants: number[] = [];
+function collectDateList(props: Prop[]): {
+  entries: DateEntry[];
+  instants: number[];
+  unreadable: string[];
+  zones: string[];
+} {
+  const entries: DateEntry[] = [];
   const unreadable: string[] = [];
   const zones: string[] = [];
   for (const p of props) {
@@ -105,11 +119,11 @@ function collectDateList(props: Prop[]): { instants: number[]; unreadable: strin
     }
     for (const piece of p.value.split(',')) {
       const dt = parseDateTime(piece, tzid);
-      if (dt) instants.push(dt.ms);
+      if (dt) entries.push({ ms: dt.ms, params: p.params });
       else unreadable.push(`${p.name}:${piece}`);
     }
   }
-  return { instants, unreadable, zones };
+  return { entries, instants: entries.map((e) => e.ms), unreadable, zones };
 }
 
 /**
@@ -128,6 +142,8 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   if (!master) return null;
 
   const warnings: string[] = [];
+  /** Date values present in the file that this parser could not read. */
+  const unreadableFixed: string[] = [];
 
   const dtstartProp = getProp(master, 'DTSTART');
   if (!dtstartProp) return null;
@@ -155,6 +171,8 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   if (dtendProp) {
     const dtend = parseDateTime(dtendProp.value, getParam(dtendProp, 'TZID') ?? tzid);
     if (dtend) durationMs = dtend.ms - dtstart.ms;
+    // An unreadable DTEND silently produced a zero-length event.
+    else unreadableFixed.push(`DTEND:${dtendProp.value}`);
   } else {
     const dur = getProp(master, 'DURATION');
     if (dur) durationMs = parseDuration(dur.value);
@@ -164,7 +182,11 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   const rd = collectDateList(getProps(master, 'RDATE'));
   const exdates = ex.instants;
   const rdates = rd.instants;
-  const unreadableDates = [...ex.unreadable, ...rd.unreadable];
+  // An UNTIL that cannot be read turned a bounded series into an endless one.
+  if (rruleProps[0].value.includes('UNTIL=') && rule.until === undefined) {
+    unreadableFixed.push(`RRULE UNTIL in ${rruleProps[0].value}`);
+  }
+  const unreadableDates = [...ex.unreadable, ...rd.unreadable, ...unreadableFixed];
 
   // Every date-bearing property carries its own TZID, and an unresolvable one
   // anywhere makes that instant a guess — not only on DTSTART.
@@ -290,6 +312,8 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
     summary: textOf(master, 'SUMMARY') || '(untitled)',
     exdates,
     rdates,
+    exdateEntries: ex.entries,
+    rdateEntries: rd.entries,
     overrides,
     occurrences,
     timeZoneUnresolved,

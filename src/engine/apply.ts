@@ -1,5 +1,6 @@
 import {
   type Component,
+  type Param,
   getProp,
   getProps,
   getParam,
@@ -8,7 +9,7 @@ import {
 } from '../ics/types.ts';
 import { formatDateTime } from '../ics/parse.ts';
 import { parseRRule, formatRRule } from './rrule.ts';
-import { type SeriesGraph, formatLike, dtParams } from './series.ts';
+import { type SeriesGraph, type DateEntry, formatLike, dtParams } from './series.ts';
 import type { SplitPlan } from './split.ts';
 
 function bumpSequence(c: Component): void {
@@ -26,20 +27,36 @@ function stampDtstamp(c: Component): void {
 }
 
 /** Emit a date-list property (EXDATE/RDATE) for a set of instants. */
-function dateListProp(
+/**
+ * Emit date-list properties, one per distinct parameter set.
+ *
+ * Values that arrived on different properties can carry different parameters —
+ * `EXDATE;X-CANCEL-SOURCE=registrar` beside a plain one. Flattening them into a
+ * single property applied the first set to everything and lost the rest.
+ */
+function dateListProps(
   name: string,
-  instants: number[],
+  entries: DateEntry[],
   graph: SeriesGraph,
-  existing: Component['props'] = [],
-): Component['props'][number] | null {
-  if (!instants.length) return null;
-  const values = instants
-    .slice()
-    .sort((a, b) => a - b)
-    .map((ms) => formatLike(graph, ms));
-  // Carry across any extra parameters the original property had.
-  const carried = existing.find((p) => p.name === name)?.params ?? [];
-  return { name, params: dtParams(graph, carried), value: values.join(',') };
+): Component['props'] {
+  if (!entries.length) return [];
+  const groups = new Map<string, { params: Param[]; values: number[] }>();
+  for (const e of entries) {
+    const extra = e.params.filter((p) => p.name !== 'VALUE' && p.name !== 'TZID');
+    const key = extra.map((p) => `${p.name}=${[...p.values].sort().join(',')}`).sort().join(';');
+    const g = groups.get(key);
+    if (g) g.values.push(e.ms);
+    else groups.set(key, { params: e.params, values: [e.ms] });
+  }
+  return [...groups.values()].map((g) => ({
+    name,
+    params: dtParams(graph, g.params),
+    value: g.values
+      .slice()
+      .sort((a, b) => a - b)
+      .map((ms) => formatLike(graph, ms))
+      .join(','),
+  }));
 }
 
 export interface ApplyResult {
@@ -87,14 +104,13 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   oldRuleProp.value = formatRRule(oldRule);
 
   // Past-only EXDATE / RDATE stay on the old master.
-  const originalDateProps = [...removeProps(oldMaster, 'EXDATE'), ...removeProps(oldMaster, 'RDATE')];
+  removeProps(oldMaster, 'EXDATE');
+  removeProps(oldMaster, 'RDATE');
   const firstFutureSlot = plan.futureOccurrences[0]?.slotMs ?? Infinity;
-  const pastEx = graph.exdates.filter((ms) => ms < firstFutureSlot);
-  const pastRd = graph.rdates.filter((ms) => ms < firstFutureSlot);
-  const exProp = dateListProp('EXDATE', pastEx, graph, originalDateProps);
-  if (exProp) oldMaster.props.push(exProp);
-  const rdProp = dateListProp('RDATE', pastRd, graph, originalDateProps);
-  if (rdProp) oldMaster.props.push(rdProp);
+  const pastEx = graph.exdateEntries.filter((e) => e.ms < firstFutureSlot);
+  const pastRd = graph.rdateEntries.filter((e) => e.ms < firstFutureSlot);
+  oldMaster.props.push(...dateListProps('EXDATE', pastEx, graph));
+  oldMaster.props.push(...dateListProps('RDATE', pastRd, graph));
   bumpSequence(oldMaster);
   stampDtstamp(oldMaster);
 
@@ -118,12 +134,17 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   getProps(newMaster, 'RRULE')[0].value = plan.newRuleText;
 
   // Re-anchored cancellations and extra dates.
-  const newEx = plan.remaps.filter((r) => r.kind === 'cancellation').map((r) => r.newSlotMs);
-  const newRd = plan.remaps.filter((r) => r.kind === 'extra').map((r) => r.newSlotMs);
-  const newExProp = dateListProp('EXDATE', newEx, graph, originalDateProps);
-  if (newExProp) newMaster.props.push(newExProp);
-  const newRdProp = dateListProp('RDATE', newRd, graph, originalDateProps);
-  if (newRdProp) newMaster.props.push(newRdProp);
+  // Each re-anchored value keeps the parameters it arrived on.
+  const paramsAt = (entries: DateEntry[], ms: number) =>
+    entries.find((e) => e.ms === ms)?.params ?? [];
+  const newEx: DateEntry[] = plan.remaps
+    .filter((r) => r.kind === 'cancellation')
+    .map((r) => ({ ms: r.newSlotMs, params: paramsAt(graph.exdateEntries, r.oldSlotMs) }));
+  const newRd: DateEntry[] = plan.remaps
+    .filter((r) => r.kind === 'extra')
+    .map((r) => ({ ms: r.newSlotMs, params: paramsAt(graph.rdateEntries, r.oldSlotMs) }));
+  newMaster.props.push(...dateListProps('EXDATE', newEx, graph));
+  newMaster.props.push(...dateListProps('RDATE', newRd, graph));
   newMaster.props.push({
     name: 'X-SERIESSAFE-SPLIT-FROM',
     params: [],
@@ -205,14 +226,10 @@ export function applyNaive(cal: Component, graph: SeriesGraph, plan: SplitPlan):
 
   removeProps(oldMaster, 'EXDATE');
   removeProps(oldMaster, 'RDATE');
-  const pastEx = graph.exdates.filter((ms) => ms < firstFuture);
-  const exProp = dateListProp('EXDATE', pastEx, graph);
-  if (exProp) oldMaster.props.push(exProp);
+  oldMaster.props.push(...dateListProps('EXDATE', graph.exdateEntries.filter((e) => e.ms < firstFuture), graph));
   // Dates added before the split are part of the truncated series, so a
   // conventional edit keeps them; only the future ones are lost with it.
-  const pastRd = graph.rdates.filter((ms) => ms < firstFuture);
-  const rdKept = dateListProp('RDATE', pastRd, graph);
-  if (rdKept) oldMaster.props.push(rdKept);
+  oldMaster.props.push(...dateListProps('RDATE', graph.rdateEntries.filter((e) => e.ms < firstFuture), graph));
 
   // The replacement series: pattern only. Future exceptions are not carried.
   const newMaster = cloneComponent(oldMaster);
