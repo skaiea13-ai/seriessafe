@@ -719,3 +719,59 @@ test('losing a date list entry is now caught, whatever caused it', () => {
     assert.ok(report.checks.some((c) => c.id === 'properties-carried' && !c.pass), label);
   }
 });
+
+/* ---- seventh review round ------------------------------------------ */
+
+test('tampering that moves times or loses data is caught, in five shapes', () => {
+  /*
+   * Each of these once passed all nine checks while the calendar was wrong.
+   * They share a root: the validator compared date properties as text and
+   * excluded DTSTART and DTEND from comparison altogether, so a swapped time
+   * zone or a stretched end time was invisible.
+   */
+  const build = (extra: string[]) =>
+    ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//r7//EN', 'BEGIN:VEVENT', `UID:${UID}`,
+     'DTSTAMP:20260101T000000Z',
+     'DTSTART;TZID=Asia/Seoul:20260303T190000', 'DTEND;TZID=Asia/Seoul:20260303T200000',
+     'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261229T100000Z', ...extra,
+     'SUMMARY:R', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n') + '\r\n';
+
+  const newMasterOf = (cal: any, uid: string) =>
+    cal.children.find((e: any) => e.name === 'VEVENT' && getProp(e, 'UID')?.value === uid && !getProp(e, 'RECURRENCE-ID'));
+
+  const cases: Array<[string, string[], (cal: any, plan: any) => void]> = [
+    ['an RDATE loses its time zone', ['RDATE;TZID=Asia/Seoul:20261111T190000'], (cal, plan) => {
+      const r = newMasterOf(cal, plan.newUid).props.find((x: any) => x.name === 'RDATE');
+      r.params = r.params.filter((x: any) => x.name !== 'TZID');
+    }],
+    ['the start time zone is swapped', [], (cal, plan) => {
+      getProp(newMasterOf(cal, plan.newUid), 'DTSTART')!.params = [{ name: 'TZID', values: ['Australia/Sydney'] }];
+    }],
+    ['each meeting is stretched', [], (cal, plan) => {
+      const d = getProp(newMasterOf(cal, plan.newUid), 'DTEND')!;
+      d.value = d.value.replace('T20', 'T23');
+    }],
+    ['a parameter value order is flipped', ['X-META;X-P=a,b:keep'], (cal, plan) => {
+      newMasterOf(cal, plan.newUid).props.find((q: any) => q.name === 'X-META').params =
+        [{ name: 'X-P', values: ['b', 'a'] }];
+    }],
+    ['one of two identical properties is dropped', ['X-TOKEN:alpha', 'X-TOKEN:alpha'], (cal, plan) => {
+      const m = newMasterOf(cal, plan.newUid);
+      m.props.splice(m.props.findIndex((q: any) => q.name === 'X-TOKEN'), 1);
+    }],
+  ];
+
+  for (const [label, extra, damage] of cases) {
+    const cal = parseIcs(build(extra));
+    const g = buildSeriesGraph(cal, UID)!;
+    const plan = simulateSplit(g, { effectiveFromMs: startOfDayInZone('2026-09-01', 'Asia/Seoul')!, byday: ['TH'] });
+    assert.ok(plan.ok, `${label}: ${JSON.stringify(plan.refusals)}`);
+
+    assert.ok(validateStage(cal, applySplit(cal, g, plan).calendar, g, plan).pass,
+      `${label}: the honest result must still pass`);
+
+    const damaged = applySplit(cal, g, plan).calendar;
+    damage(damaged, plan);
+    assert.ok(!validateStage(cal, damaged, g, plan).pass, `${label} must fail validation`);
+  }
+});

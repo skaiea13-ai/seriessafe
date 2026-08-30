@@ -1,5 +1,5 @@
-import { type Component, type Prop, getProp } from '../ics/types.ts';
-import { parseIcs } from '../ics/parse.ts';
+import { type Component, type Prop, getProp, getParam } from '../ics/types.ts';
+import { parseIcs, parseDateTime } from '../ics/parse.ts';
 import { serializeIcs } from '../ics/serialize.ts';
 import { buildSeriesGraph, formatLike, type SeriesGraph } from './series.ts';
 import { parseRRule } from './rrule.ts';
@@ -21,15 +21,20 @@ export interface ValidationReport {
   checkedAt: number;
 }
 
-/** Two properties match only if their parameters match as well. */
-function samePropExactly(a: Prop, b: Prop): boolean {
-  if (a.name !== b.name || a.value !== b.value) return false;
-  const key = (p: Prop) =>
-    p.params
-      .map((x) => `${x.name}=${[...x.values].sort().join(',')}`)
-      .sort()
-      .join(';');
-  return key(a) === key(b);
+/** A property's full identity: name, value, and parameters in order. */
+function propKey(p: Prop): string {
+  return `${p.name}|${p.value}|${JSON.stringify(p.params.map((x) => [x.name, x.values]))}`;
+}
+
+/** Count each distinct property, so multiplicity is part of the comparison. */
+function propCounts(props: Prop[], skip: (name: string) => boolean): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const p of props) {
+    if (skip(p.name)) continue;
+    const k = propKey(p);
+    m.set(k, (m.get(k) ?? 0) + 1);
+  }
+  return m;
 }
 
 interface Rendered {
@@ -66,13 +71,13 @@ function render(cal: Component, uid: string, horizonMs?: number): Rendered[] {
  * properties were verified byte-for-byte.
  */
 function propFingerprint(c: Component): string {
+  // Parameter *order within a value list* is preserved: `X-P=a,b` and
+  // `X-P=b,a` are not the same thing, and normalising them is not this tool's
+  // call for a parameter it does not understand.
   const params = (p: { params: Array<{ name: string; values: string[] }> }) =>
-    p.params
-      .map((x) => `${x.name}=${[...x.values].sort().join(',')}`)
-      .sort()
-      .join(';');
+    JSON.stringify(p.params.map((x) => [x.name, x.values]));
   const props = c.props
-    .map((p) => `${p.name}[${params(p)}]=${p.value}`)
+    .map((p) => `${p.name}${params(p)}=${p.value}`)
     .sort()
     .join('|');
   const kids = c.children.map(propFingerprint).sort().join('&');
@@ -278,6 +283,7 @@ export function validateStage(
   // 5. Properties, alarms and X- extensions carried across.
   {
     const problems: string[] = [];
+    const contentProblemsOfStart: string[] = [];
     let carried = 0;
     for (const r of plan.remaps.filter((x) => x.kind === 'override')) {
       const src = before.overrides.get(r.oldSlotMs);
@@ -288,11 +294,15 @@ export function validateStage(
         return !!rid && rid.value === formatLike(before, r.newSlotMs);
       });
       if (!src || !dst) continue;
-      for (const p of src.props) {
-        if (['UID', 'RECURRENCE-ID', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'].includes(p.name)) continue;
-        const match = dst.props.find((q) => samePropExactly(p, q));
-        if (!match) problems.push(`${p.name} lost or altered on the ${fmt(r.oldSlotMs)} occurrence`);
-        else carried++;
+      // Counted, not merely found: two identical properties must still be two.
+      const skipOverride = (n: string) =>
+        ['UID', 'RECURRENCE-ID', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'].includes(n) ||
+        n.startsWith('X-SERIESSAFE-');
+      const wantOv = propCounts(src.props, skipOverride);
+      const gotOv = propCounts(dst.props, skipOverride);
+      for (const [k, n] of wantOv) {
+        if ((gotOv.get(k) ?? 0) !== n) problems.push(`${k.split('|')[0]} lost or altered on the ${fmt(r.oldSlotMs)} occurrence`);
+        else carried += n;
       }
       const srcAlarms = src.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
       const dstAlarms = dst.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
@@ -305,11 +315,40 @@ export function validateStage(
       (c) => c.name === 'VEVENT' && (getProp(c, 'UID')?.value ?? '') === plan.newUid && !getProp(c, 'RECURRENCE-ID'),
     );
     if (newMaster) {
-      for (const p of before.master.props) {
-        if (['UID', 'DTSTART', 'DTEND', 'RRULE', 'EXDATE', 'RDATE', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'].includes(p.name)) continue;
-        const match = newMaster.props.find((q) => samePropExactly(p, q));
-        if (!match) problems.push(`${p.name} lost or altered on the new series`);
-        else carried++;
+      const skipMaster = (n: string) =>
+        ['UID', 'DTSTART', 'DTEND', 'RRULE', 'EXDATE', 'RDATE', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'].includes(n) ||
+        n.startsWith('X-SERIESSAFE-');
+      const wantM = propCounts(before.master.props, skipMaster);
+      const gotM = propCounts(newMaster.props, skipMaster);
+      for (const [k, n] of wantM) {
+        if ((gotM.get(k) ?? 0) !== n) problems.push(`${k.split('|')[0]} lost or altered on the new series`);
+        else carried += n;
+      }
+
+      /*
+       * DTSTART and DTEND are rewritten, so they are excluded above — which
+       * left them unchecked entirely. A changed TZID on DTSTART moved the
+       * whole future series by an hour, and a changed DTEND turned a one-hour
+       * class into a four-hour one, both with every check green. They are
+       * compared as resolved instants, not as text.
+       */
+      const resolved = (p: Prop | undefined) =>
+        p ? parseDateTime(p.value, getParam(p, 'TZID') ?? undefined)?.ms ?? null : null;
+      const gotStart = resolved(getProp(newMaster, 'DTSTART'));
+      if (gotStart !== plan.newDtstartMs) {
+        contentProblemsOfStart.push(
+          `the new series starts at ${gotStart === null ? '(unreadable)' : fmt(gotStart)}, not ${fmt(plan.newDtstartMs)}`,
+        );
+      }
+      const dtendProp = getProp(newMaster, 'DTEND');
+      if (dtendProp) {
+        const gotEnd = resolved(dtendProp);
+        const wantEnd = plan.newDtstartMs + before.durationMs;
+        if (gotEnd !== wantEnd) {
+          contentProblemsOfStart.push(
+            `each meeting would run to ${gotEnd === null ? '(unreadable)' : fmt(gotEnd)} instead of ${fmt(wantEnd)}`,
+          );
+        }
       }
       const a = before.master.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
       const b = newMaster.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
@@ -326,13 +365,22 @@ export function validateStage(
      */
     const paramKey = (ps: Prop['params']) =>
       JSON.stringify(ps.filter((p) => p.name !== 'VALUE' && p.name !== 'TZID').map((p) => [p.name, p.values]));
+    /*
+     * Each output value is resolved using the parameters *it* carries, so a
+     * dropped or altered TZID is caught. Comparing the literal text alone let
+     * `RDATE;TZID=Asia/Seoul:20261111T190000` lose its zone and move nine
+     * hours with every check green.
+     */
     const outEntries = (name: string, uid: string) => {
       const master = reparsed.children.find(
         (c) => c.name === 'VEVENT' && (getProp(c, 'UID')?.value ?? '') === uid && !getProp(c, 'RECURRENCE-ID'),
       );
-      const out: Array<{ value: string; key: string }> = [];
+      const out: Array<{ ms: number | null; key: string }> = [];
       for (const p of master?.props.filter((x) => x.name === name) ?? []) {
-        for (const v of p.value.split(',')) out.push({ value: v, key: paramKey(p.params) });
+        const tz = getParam(p, 'TZID');
+        for (const v of p.value.split(',')) {
+          out.push({ ms: parseDateTime(v, tz)?.ms ?? null, key: paramKey(p.params) });
+        }
       }
       return out;
     };
@@ -345,19 +393,18 @@ export function validateStage(
       for (const e of entries) {
         const moved = plan.remaps.find((r) => r.oldSlotMs === e.ms);
         const target = moved ? newOut : oldOut;
-        const wantValue = formatLike(before, moved ? moved.newSlotMs : e.ms);
+        const wantMs = moved ? moved.newSlotMs : e.ms;
         const want = paramKey(e.params);
-        if (!target.some((o) => o.value === wantValue && o.key === want)) {
-          problems.push(
-            `${name} for ${fmt(e.ms)} lost its entry or its parameters`,
-          );
+        if (!target.some((o) => o.ms === wantMs && o.key === want)) {
+          problems.push(`${name} for ${fmt(e.ms)} lost its entry, its time zone or its parameters`);
         } else carried++;
       }
     }
 
+    problems.push(...contentProblemsOfStart);
     checks.push({
       id: 'properties-carried',
-      title: 'Locations, attendees, reminders, date lists and private X- properties carried across',
+      title: 'Times, locations, attendees, reminders, date lists and private X- properties carried across',
       pass: problems.length === 0,
       evidence: problems.length === 0
         ? `${carried} properties and alarms verified byte-for-byte on the new series.`
@@ -450,8 +497,14 @@ export function validateStage(
         !getProp(c, 'RECURRENCE-ID'),
     );
     const writtenRule = writtenMaster?.props.find((p) => p.name === 'RRULE')?.value ?? '';
-    const writtenStart = writtenMaster ? (getProp(writtenMaster, 'DTSTART')?.value ?? '') : '';
+    const startProp = writtenMaster ? getProp(writtenMaster, 'DTSTART') : undefined;
+    const writtenStart = startProp?.value ?? '';
     const wantStart = formatLike(before, plan.newDtstartMs);
+    // Resolved with the parameters actually written, so a swapped TZID cannot
+    // keep the same text while meaning a different instant.
+    const writtenStartMs = startProp
+      ? parseDateTime(startProp.value, getParam(startProp, 'TZID') ?? undefined)?.ms ?? null
+      : null;
 
     /*
      * Comparing occurrence counts cannot see a rule that changed shape:
@@ -461,7 +514,7 @@ export function validateStage(
      */
     const norm = (r: string) => r.split(';').map((x) => x.trim().toUpperCase()).sort().join(';');
     const ruleMatches = norm(writtenRule) === norm(plan.newRuleText);
-    const startMatches = writtenStart === wantStart;
+    const startMatches = writtenStart === wantStart && writtenStartMs === plan.newDtstartMs;
     checks.push({
       id: 'rule-as-planned',
       title: 'The recurrence written out is the one that was planned',
@@ -471,7 +524,10 @@ export function validateStage(
         : !ruleMatches
         ? `Planned ${plan.newRuleText}, wrote ${writtenRule || '(none)'}.`
         : !startMatches
-        ? `Planned a start of ${wantStart}, wrote ${writtenStart || '(none)'}.`
+        ? writtenStart === wantStart
+          ? `The start reads ${writtenStart} but its parameters resolve it to ` +
+            `${writtenStartMs === null ? '(unreadable)' : fmt(writtenStartMs)}, not ${fmt(plan.newDtstartMs)}.`
+          : `Planned a start of ${wantStart}, wrote ${writtenStart || '(none)'}.`
         : `${writtenRule} starting ${writtenStart}, exactly as planned.`,
     });
   }
