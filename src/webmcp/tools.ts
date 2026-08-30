@@ -172,12 +172,16 @@ export function doStage(params: SplitParams): string {
   if (!plan.ok) {
     state.staged = null;
     state.validation = null;
+    // Surfaced on the page too: a refusal that only the caller sees looks
+    // identical to nothing having happened.
+    state.refusals = plan.refusals;
     unregisterCommit();
     notify();
     return fail('The change was not staged because it cannot be applied safely.', {
       refusals: plan.refusals,
     });
   }
+  state.refusals = null;
   const safe = applySplit(state.calendar!, g, plan).calendar;
   const naive = applyNaive(state.calendar!, g, plan).calendar;
   state.staged = { params, plan, safe, naive, stagedAt: Date.now() };

@@ -225,17 +225,29 @@ function requestCard(): string {
   </div>`;
 }
 
+function refusalCard(): string {
+  const rs = state.refusals;
+  if (!rs || !rs.length) return '';
+  return `
+  <div class="card">
+    <h2>Refused — nothing was changed</h2>
+    <p class="hint">This change cannot be made without guessing, so SeriesSafe declined it rather than
+      producing a calendar it could not vouch for.</p>
+    ${rs
+      .map(
+        (r) => `<div class="refusal"><strong>${esc(r.message)}</strong><em>${esc(r.remedy)}</em>
+          <em style="margin-top:4px;opacity:.75"><code>${esc(r.code)}</code></em></div>`,
+      )
+      .join('')}
+  </div>`;
+}
+
 function comparisonCard(): string {
   const s = state.staged;
   const g = state.graph;
   if (!s || !g) return '';
   const { plan } = s;
-
-  if (!plan.ok) {
-    return `<div class="card"><h2>Refused</h2>
-      ${plan.refusals.map((r) => `<div class="refusal"><strong>${esc(r.message)}</strong><em>${esc(r.remedy)}</em></div>`).join('')}
-    </div>`;
-  }
+  if (!plan.ok) return '';
 
   const kept = plan.remaps.map((r) => {
     const what =
@@ -397,6 +409,7 @@ export function render(): void {
       </div>
       <div>
         ${requestCard()}
+        ${refusalCard()}
         ${comparisonCard()}
         ${validationCard()}
         ${committedCard()}

@@ -1,6 +1,6 @@
 import type { Component } from './ics/types.ts';
 import type { SeriesGraph } from './engine/series.ts';
-import type { SplitPlan, SplitParams } from './engine/split.ts';
+import type { SplitPlan, SplitParams, Refusal } from './engine/split.ts';
 import type { ValidationReport } from './engine/validate.ts';
 
 export interface StagedPatch {
@@ -31,6 +31,8 @@ export interface AppState {
   selectedUid: string | null;
   graph: SeriesGraph | null;
   staged: StagedPatch | null;
+  /** Why the last attempt was refused. Cleared as soon as one succeeds. */
+  refusals: Refusal[] | null;
   validation: ValidationReport | null;
   commit: CommitRecord | null;
   /** Chronological trace of every tool call, shown live in the UI. */
@@ -46,6 +48,7 @@ export const state: AppState = {
   selectedUid: null,
   graph: null,
   staged: null,
+  refusals: null,
   validation: null,
   commit: null,
   log: [],
@@ -99,5 +102,6 @@ export function logCall(
 /** Clear everything downstream of the selected series. */
 export function resetDownstream(): void {
   state.staged = null;
+  state.refusals = null;
   state.validation = null;
 }
