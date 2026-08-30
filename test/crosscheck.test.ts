@@ -292,12 +292,21 @@ test('a date boundary is resolved in the series zone, across a DST change', () =
 
 test('a rule SeriesSafe would not accept is not one it will write', () => {
   // Adding BYDAY to a DAILY series produced FREQ=DAILY;BYDAY=TH, expanded here
-  // as consecutive days and read by everyone else as Thursdays.
+  // as consecutive days and read by everyone else as Thursdays. A daily series
+  // is now declined at the door — only weekly recurrence is expanded exactly —
+  // so the request is refused before a rule can be written at all.
   const ics = wrap(['DTSTART:20260302T090000Z', 'DTEND:20260302T100000Z',
                     'RRULE:FREQ=DAILY;COUNT=30'].join('\r\n'));
   const { plan } = attempt(ics, Date.UTC(2026, 2, 9), ['TH']);
   assert.ok(!plan.ok);
-  assert.ok(codes(plan).includes('UNSUPPORTED_RESULT_RULE'), codes(plan).join(','));
+  assert.ok(codes(plan).includes('UNSUPPORTED_RRULE_PART'), codes(plan).join(','));
+
+  // The guard on the produced rule stays as a second line of defence: nothing
+  // reachable today should trip it, and a weekly change never does.
+  const weekly = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                       'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40'].join('\r\n'));
+  const ok = attempt(weekly, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(ok.plan.ok, JSON.stringify(ok.plan.refusals));
 });
 
 test('date values that cannot be read stop the operation', () => {
@@ -930,4 +939,78 @@ test('parameters riding on a rewritten date, and an anchor that gains a RANGE', 
     getProp(m, n)!.params = getProp(m, n)!.params.filter((p) => !p.name.startsWith('X-'));
   }
   assert.ok(!validateStage(cal, stripped, g, plan).pass, 'stripped date parameters must fail');
+});
+
+/* ---- tenth review round -------------------------------------------- */
+
+test('a start time that does not exist that day is refused', () => {
+  // Resolving 02:30 forward to 03:30 on a spring-forward Sunday is right for
+  // that one occurrence, but it was then written as the new DTSTART — making
+  // every later Sunday 03:30 as well.
+  const ics = wrap(['DTSTART;TZID=America/New_York:20260104T090000',
+                    'DTEND;TZID=America/New_York:20260104T100000',
+                    'RRULE:FREQ=WEEKLY;BYDAY=SU;COUNT=60'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  const from = startOfDayInZone('2026-03-08', 'America/New_York')!;
+
+  const gap = simulateSplit(g, { effectiveFromMs: from, byday: ['SU'], timeOfDay: '02:30' });
+  assert.ok(!gap.ok);
+  assert.ok(gap.refusals.some((r) => r.code === 'TIME_DOES_NOT_EXIST'),
+    gap.refusals.map((r) => r.code).join(','));
+
+  const fine = simulateSplit(g, { effectiveFromMs: from, byday: ['SU'], timeOfDay: '09:30' });
+  assert.ok(fine.ok, JSON.stringify(fine.refusals));
+});
+
+test('an anchor written in UTC against a zoned master is still found', () => {
+  // The anchor was re-formatted in the series' own value type and compared as
+  // text, so a legal UTC RECURRENCE-ID on a TZID master was simply not found
+  // and the override stayed on the truncated series.
+  const ics = wrap(
+    ['DTSTART;TZID=America/New_York:20260303T090000',
+     'DTEND;TZID=America/New_York:20260303T100000',
+     'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60'].join('\r\n'),
+    ['BEGIN:VEVENT', `UID:${UID}`, 'DTSTAMP:20260901T000000Z',
+     'DTSTART;TZID=America/New_York:20260916T090000',
+     'DTEND;TZID=America/New_York:20260916T100000',
+     'RECURRENCE-ID:20260915T130000Z',            // the same instant, written in UTC
+     'SUMMARY:Moved, anchored in UTC', 'END:VEVENT'].join('\r\n'),
+  );
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  assert.equal(g.overrides.size, 1, 'the UTC anchor resolves to a slot');
+
+  const { plan, out, report } = attempt(ics, Date.UTC(2026, 8, 1, 4), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(report!.pass, report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+  assert.match(out, /Moved, anchored in UTC/);
+  assert.doesNotMatch(out, /RECURRENCE-ID:20260915T130000Z/, 'and it is not left behind');
+});
+
+test('a UID keeps the parameters it carried', () => {
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40'].join('\r\n'))
+    .replace(`UID:${UID}`, `UID;X-SOURCE-ID=vendor-42:${UID}`);
+  const { plan, out } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.equal((out.match(/X-SOURCE-ID=vendor-42/g) ?? []).length, 2,
+    'both the original and the new series keep it');
+});
+
+test('only weekly recurrence is operated on, and the rest are declined', () => {
+  // A MONTHLY rule lost its last occurrence and a YEARLY rule on 29 February
+  // produced 1 March in non-leap years. Only WEEKLY is expanded exactly, and
+  // that is what the documented scope says, so the rest are refused.
+  for (const rule of [
+    'FREQ=MONTHLY;BYMONTHDAY=5,20;UNTIL=20260305T090000Z',
+    'FREQ=YEARLY;COUNT=3',
+    'FREQ=DAILY;COUNT=30',
+  ]) {
+    const ics = wrap(['DTSTART:20240229T090000Z', 'DTEND:20240229T100000Z', `RRULE:${rule}`].join('\r\n'));
+    const g = buildSeriesGraph(parseIcs(ics), UID);
+    assert.ok(g, `${rule}: the graph still builds so the UI can explain it`);
+    const plan = simulateSplit(g!, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TH'] });
+    assert.ok(!plan.ok, `${rule} should be refused`);
+    assert.ok(plan.refusals.some((r) => r.code === 'UNSUPPORTED_RRULE_PART'),
+      `${rule}: ${plan.refusals.map((r) => r.code).join(',')}`);
+  }
 });

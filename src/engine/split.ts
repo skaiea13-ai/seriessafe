@@ -326,6 +326,32 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
     });
   }
 
+  /*
+   * A requested time that does not exist on the first new date cannot be
+   * written down. Resolving 02:30 forward to 03:30 on a spring-forward Sunday
+   * is right for that one occurrence, but it was then serialized as the new
+   * DTSTART — making every later Sunday 03:30 too. Refuse rather than move a
+   * whole series by an hour.
+   */
+  if (anchor !== null && params.timeOfDay && !graph.isDate) {
+    const asked = params.timeOfDay.trim();
+    const got = new Intl.DateTimeFormat('en-GB', {
+      timeZone: graph.tzid && graph.tzid.length ? graph.tzid : 'UTC',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date(anchor));
+    if (got !== asked) {
+      refusals.push({
+        code: 'TIME_DOES_NOT_EXIST',
+        message:
+          `${asked} does not exist on ${formatHuman(anchor, graph.tzid)} — the clocks move forward that ` +
+          `day, so the nearest real time is ${got}.`,
+        remedy: 'Pick a different start time, or an effective date outside the changeover.',
+      });
+    }
+  }
+
   const newDtstartMs = anchor ?? effectiveFromMs;
   const horizon = Math.max(
     future.length ? future[future.length - 1].slotMs : newDtstartMs,

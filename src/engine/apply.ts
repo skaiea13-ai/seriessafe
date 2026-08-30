@@ -88,16 +88,18 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   const events = out.children.filter((c) => c.name === 'VEVENT');
 
   const isOurs = (c: Component) => (getProp(c, 'UID')?.value ?? '') === graph.uid;
+  /*
+   * Resolve the anchor using the parameters it carries, rather than
+   * re-formatting the series' own value type and comparing text. An override
+   * written with a UTC RECURRENCE-ID against a TZID master is perfectly legal
+   * and was simply not found, so it stayed on the truncated series.
+   */
   const ridMsOf = (c: Component): number | null => {
     const rid = getProp(c, 'RECURRENCE-ID');
     if (!rid) return null;
-    const tz = getParam(rid, 'TZID') ?? graph.tzid;
-    const dt = rid.value;
-    // Reuse the graph's override map by matching formatted values.
-    for (const [ms] of graph.overrides) {
-      if (formatDateTime(ms, { tzid: tz, isDate: graph.isDate, isUtc: graph.isUtc && !tz }) === dt) return ms;
-    }
-    return null;
+    const parsed = parseDateTime(rid.value, getParam(rid, 'TZID') ?? graph.tzid);
+    if (!parsed) return null;
+    return graph.overrides.has(parsed.ms) ? parsed.ms : null;
   };
 
   // ---- 1. truncate the old master -----------------------------------
@@ -128,8 +130,10 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   const newMaster = cloneComponent(oldMaster);
   removeProps(newMaster, 'EXDATE');
   removeProps(newMaster, 'RDATE');
-  removeProps(newMaster, 'UID');
-  newMaster.props.unshift({ name: 'UID', params: [], value: plan.newUid });
+  // A UID may carry parameters of its own; replacing the value is not licence
+  // to drop them.
+  const oldUidParams = removeProps(newMaster, 'UID')[0]?.params ?? [];
+  newMaster.props.unshift({ name: 'UID', params: oldUidParams, value: plan.newUid });
 
   const newDtstart = getProp(newMaster, 'DTSTART');
   if (newDtstart) {

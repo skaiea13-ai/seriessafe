@@ -49,7 +49,13 @@ export function parseRRule(value: string): RRule {
   if (freq === 'YEARLY' && (parts.BYDAY || parts.BYMONTHDAY)) {
     unsupported.FREQ = 'YEARLY with BY* parts';
   }
-  if (!['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(freq)) {
+  /*
+   * Only WEEKLY is expanded exactly, and only WEEKLY is documented as
+   * supported — but the code had been happy to operate on the others anyway.
+   * A MONTHLY rule lost its last occurrence, and a YEARLY rule on 29 February
+   * produced 1 March in non-leap years. Saying no is the honest answer.
+   */
+  if (freq !== 'WEEKLY') {
     unsupported.FREQ = parts.FREQ ?? '(missing)';
   }
 
