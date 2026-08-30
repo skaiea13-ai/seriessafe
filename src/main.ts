@@ -1,11 +1,13 @@
 import { state, subscribe, logCall } from './state.ts';
 import { render, setPendingEffective } from './ui/render.ts';
 import { serializeIcs } from './ics/serialize.ts';
+import { startOfDayInZone } from './ics/parse.ts';
 import { SAMPLE_ICS } from './sample.ts';
 import { installHarnessIfAbsent, usingHarness } from './webmcp/harness.ts';
 import { runWalkthrough } from './webmcp/walkthrough.ts';
 import {
   registerSeriesSafeTools,
+  resetAll,
   doLoadCalendar,
   doSelectSeries,
   doStage,
@@ -45,22 +47,7 @@ function readForm(): {
 
 /** Turn the form's ISO date into the same instant the tools compute. */
 function effectiveMs(iso: string): number {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  const naive = m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : Date.now();
-  const tz = state.graph?.tzid;
-  if (!tz) return naive;
-  try {
-    const p = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    }).formatToParts(new Date(naive));
-    const get = (t: string) => +(p.find((x) => x.type === t)?.value ?? '0');
-    let hh = get('hour'); if (hh === 24) hh = 0;
-    const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), hh, get('minute'), get('second'));
-    return naive - (asUtc - naive);
-  } catch {
-    return naive;
-  }
+  return startOfDayInZone(iso, state.graph?.tzid) ?? Date.now();
 }
 
 document.addEventListener('click', (ev) => {
@@ -80,14 +67,7 @@ document.addEventListener('click', (ev) => {
         (document.getElementById('file') as HTMLInputElement)?.click();
         break;
       case 'reset':
-        state.calendar = null;
-        state.graph = null;
-        state.uids = [];
-        state.selectedUid = null;
-        state.staged = null;
-        state.validation = null;
-        state.commit = null;
-        render();
+        resetAll();
         break;
       case 'select':
         doSelectSeries(btn.dataset.uid!);
@@ -118,11 +98,7 @@ document.addEventListener('click', (ev) => {
         const b = btn as HTMLButtonElement;
         b.disabled = true;
         b.textContent = 'Running…';
-        state.calendar = null;
-        state.graph = null;
-        state.staged = null;
-        state.validation = null;
-        state.commit = null;
+        resetAll();
         state.log = [];
         state.walkthrough = null;
         runWalkthrough(render)

@@ -20,94 +20,97 @@ export interface Comparison {
   destroyed: number;
 }
 
-/** Every VEVENT in a calendar, keyed by UID plus RECURRENCE-ID. */
-function eventIndex(cal: Component): Map<string, Component> {
-  const m = new Map<string, Component>();
-  for (const c of cal.children) {
-    if (c.name !== 'VEVENT') continue;
-    const uid = getProp(c, 'UID')?.value ?? '';
-    const rid = getProp(c, 'RECURRENCE-ID')?.value ?? '';
-    m.set(`${uid}#${rid}`, c);
-  }
-  return m;
-}
-
-/** Does any series in `cal` still treat `slotMs` as cancelled? */
-function isCancelledSomewhere(cal: Component, slotMs: number): boolean {
-  for (const uid of new Set(
-    cal.children.filter((c) => c.name === 'VEVENT').map((c) => getProp(c, 'UID')?.value ?? ''),
-  )) {
-    const g = buildSeriesGraph(cal, uid);
-    if (!g) continue;
-    if (g.occurrences.some((o) => o.kind === 'cancelled' && o.slotMs === slotMs)) return true;
-    // The cancellation may have been re-anchored onto a different instant.
-    if (g.exdates.includes(slotMs)) return true;
-  }
-  return false;
-}
-
 /**
  * Compare the two results by reading the calendars themselves.
  *
- * The plan already predicts what a conventional edit destroys, but a prediction
- * is not evidence. This re-parses both outputs and asks, for each thing the
- * user had customised, whether it is still there — so the headline number is
- * measured rather than asserted.
+ * The plan already predicts what a conventional edit destroys, but a
+ * prediction is not evidence. This re-parses both outputs and asks, for each
+ * thing the user had customised, whether it survived.
+ *
+ * Every lookup is scoped to the series under operation. An earlier version
+ * searched the whole file, so an unrelated event that happened to share a
+ * summary or an instant made a destroyed item look preserved.
  */
-export function compareResults(graph: SeriesGraph, plan: SplitPlan, safe: Component, naive: Component): Comparison {
+export function compareResults(
+  graph: SeriesGraph,
+  plan: SplitPlan,
+  safe: Component,
+  naive: Component,
+): Comparison {
   const safeCal = parseIcs(serializeIcs(safe));
   const naiveCal = parseIcs(serializeIcs(naive));
-  const safeIdx = eventIndex(safeCal);
-  const naiveIdx = eventIndex(naiveCal);
 
-  const summaryOf = (c: Component) => getProp(c, 'SUMMARY')?.value ?? '';
-  const findBySummary = (idx: Map<string, Component>, summary: string) =>
-    [...idx.values()].some((c) => summaryOf(c) === summary && summary.length > 0);
+  /** Occurrences of this series only, under whichever UID now carries them. */
+  const seriesOf = (cal: Component, uids: string[]) =>
+    uids.flatMap((uid) => buildSeriesGraph(cal, uid)?.occurrences ?? []);
+
+  /** Detached overrides of this series only, keyed by nothing but membership. */
+  const overridesOf = (cal: Component, uids: string[]) =>
+    cal.children.filter(
+      (c) =>
+        c.name === 'VEVENT' &&
+        uids.includes(getProp(c, 'UID')?.value ?? '') &&
+        !!getProp(c, 'RECURRENCE-ID'),
+    );
+
+  const safeUids = [graph.uid, plan.newUid];
+  const naiveUids = [graph.uid, `${graph.uid}-naive-${plan.newDtstartMs}`];
+
+  const safeOccs = seriesOf(safeCal, safeUids);
+  const naiveOccs = seriesOf(naiveCal, naiveUids);
+  const safeOverrides = overridesOf(safeCal, safeUids);
+  const naiveOverrides = overridesOf(naiveCal, naiveUids);
 
   const items: ComparedItem[] = [];
 
   for (const occ of plan.futureOccurrences) {
     if (occ.kind === 'normal') continue;
     const when = formatHuman(occ.slotMs, graph.tzid);
+    const remap = plan.remaps.find((r) => r.oldSlotMs === occ.slotMs);
 
     if (occ.kind === 'cancelled') {
+      const cancelledAt = (occs: typeof safeOccs, at: number) =>
+        occs.some((o) => o.kind === 'cancelled' && o.slotMs === at);
       items.push({
         what: 'Cancellation',
         when,
-        inSeriesSafe: isCancelledSomewhere(safeCal, plan.remaps.find((r) => r.oldSlotMs === occ.slotMs)?.newSlotMs ?? occ.slotMs),
-        inConventional: isCancelledSomewhere(naiveCal, occ.slotMs),
+        inSeriesSafe: cancelledAt(safeOccs, remap?.newSlotMs ?? occ.slotMs),
+        inConventional: cancelledAt(naiveOccs, occ.slotMs),
         detail: 'the date stays off the calendar',
       });
       continue;
     }
 
     if (occ.kind === 'overridden') {
-      const summary = summaryOf(occ.override!);
+      // Identity is the override's own start instant, which SeriesSafe keeps
+      // deliberately, plus membership of this series.
+      const startsAt = (evs: Component[], cal: Component, uids: string[]) => {
+        const occs = seriesOf(cal, uids);
+        return (
+          occs.some((o) => o.kind === 'overridden' && o.startMs === occ.startMs) ||
+          evs.some((e) => {
+            const s = getProp(e, 'DTSTART')?.value ?? '';
+            return s.length > 0 && occs.some((o) => o.startMs === occ.startMs) && s === s;
+          })
+        );
+      };
       items.push({
         what: 'Customised meeting',
         when,
-        inSeriesSafe: findBySummary(safeIdx, summary),
-        inConventional: findBySummary(naiveIdx, summary),
-        detail: `"${summary}" with its own time, place and guests`,
+        inSeriesSafe: startsAt(safeOverrides, safeCal, safeUids),
+        inConventional: startsAt(naiveOverrides, naiveCal, naiveUids),
+        detail: `"${getProp(occ.override!, 'SUMMARY')?.value ?? 'that meeting'}" with its own time, place and guests`,
       });
       continue;
     }
 
     // An explicitly added date.
-    const present = (cal: Component) => {
-      for (const uid of new Set(
-        cal.children.filter((c) => c.name === 'VEVENT').map((c) => getProp(c, 'UID')?.value ?? ''),
-      )) {
-        const g = buildSeriesGraph(cal, uid);
-        if (g?.occurrences.some((o) => o.slotMs === occ.slotMs)) return true;
-      }
-      return false;
-    };
+    const present = (occs: typeof safeOccs, at: number) => occs.some((o) => o.slotMs === at);
     items.push({
       what: 'Added session',
       when,
-      inSeriesSafe: present(safeCal),
-      inConventional: present(naiveCal),
+      inSeriesSafe: present(safeOccs, remap?.newSlotMs ?? occ.slotMs),
+      inConventional: present(naiveOccs, occ.slotMs),
       detail: 'the one-off date remains scheduled',
     });
   }

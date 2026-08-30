@@ -1,6 +1,6 @@
 import { getProp, getProps, getParam } from '../ics/types.ts';
 import { formatDateTime, parseDateTime } from '../ics/parse.ts';
-import { expandRRule, formatRRule, type RRule } from './rrule.ts';
+import { expandRRule, formatRRule, parseRRule, type RRule } from './rrule.ts';
 import { tzOffsetMs } from '../ics/parse.ts';
 import { PRESERVED_PROPS, formatUntil, type SeriesGraph, type Occurrence } from './series.ts';
 
@@ -142,6 +142,16 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
     });
   }
 
+  if (graph.unreadableDates.length) {
+    refusals.push({
+      code: 'UNREADABLE_DATE_VALUE',
+      message:
+        `This series contains date values this tool cannot read: ${graph.unreadableDates.slice(0, 3).join(', ')}` +
+        `${graph.unreadableDates.length > 3 ? ', …' : ''}.`,
+      remedy: 'Convert those to plain date or date-time values, then retry.',
+    });
+  }
+
   if (graph.truncated) {
     refusals.push({
       code: 'SERIES_TOO_LARGE',
@@ -260,6 +270,32 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
     });
   }
 
+  /*
+   * The generated rule is checked for the same capabilities as the input one.
+   * Adding BYDAY to a DAILY series produced `FREQ=DAILY;BYDAY=TH`, which this
+   * engine expanded as consecutive days while every other reader takes it as
+   * Thursdays — a rule SeriesSafe wrote and cannot itself honour.
+   */
+  const producedUnsupported = Object.keys(parseRRule(formatRRule(newRule)).unsupported);
+  if (producedUnsupported.length && !unsupported.length) {
+    refusals.push({
+      code: 'UNSUPPORTED_RESULT_RULE',
+      message:
+        `That change would produce ${formatRRule(newRule)}, which uses ${producedUnsupported.join(', ')} in a ` +
+        'way this engine does not expand exactly.',
+      remedy: `Keep the series weekly when choosing days, or leave the days as they are.`,
+    });
+  }
+
+  // A date-only series has no time of day to set.
+  if (params.timeOfDay !== undefined && graph.isDate) {
+    refusals.push({
+      code: 'TIME_ON_ALL_DAY_SERIES',
+      message: 'This is an all-day series, so it has no start time to change.',
+      remedy: 'Remove the time, or convert the series to a timed one first.',
+    });
+  }
+
   const anchor = computeNewAnchor(graph, params, effectiveFromMs);
   if (anchor === null) {
     refusals.push({
@@ -336,7 +372,29 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
       continue;
     }
 
-    if (occ.kind === 'cancelled') {
+    if (occ.kind === 'cancelled' && occ.override) {
+      /*
+       * A cancellation expressed as STATUS:CANCELLED on a detached override is
+       * the RFC's way of calling an occurrence off while keeping what was
+       * attached to it — a note, a reminder, a record of who was told. Turning
+       * it into a bare EXDATE would drop all of that and strand the original
+       * event on the series being truncated. It moves as an override instead.
+       */
+      const ov = occ.override;
+      const carried = ov.props
+        .map((p) => p.name)
+        .filter((n) => (PRESERVED_PROPS as readonly string[]).includes(n) || n.startsWith('X-'));
+      if (ov.children.some((c) => c.name === 'VALARM')) carried.push('VALARM');
+      remaps.push({
+        kind: 'override',
+        ordinal,
+        oldSlotMs: occ.slotMs,
+        newSlotMs: target,
+        label: labelOf(occ, graph),
+        keptStartMs: occ.startMs,
+        carried: [...new Set(carried)],
+      });
+    } else if (occ.kind === 'cancelled') {
       remaps.push({
         kind: 'cancellation',
         ordinal,

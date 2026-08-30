@@ -48,6 +48,8 @@ export interface SeriesGraph {
   occurrences: Occurrence[];
   /** Set when a TZID could not be resolved, so every instant is a guess. */
   timeZoneUnresolved?: string;
+  /** Date values present in the file that this parser could not read. */
+  unreadableDates: string[];
   /** True when the rule has neither COUNT nor UNTIL, so it never ends. */
   unbounded: boolean;
   /** True when expansion hit its safety limit, so the model is incomplete. */
@@ -82,17 +84,32 @@ function textOf(c: Component, name: string): string {
   return p ? unescapeText(p.value) : '';
 }
 
-/** Collect every date value from a multi-valued EXDATE/RDATE property set. */
-function collectDateList(props: Prop[]): number[] {
-  const out: number[] = [];
+/**
+ * Collect every date value from a multi-valued EXDATE/RDATE property set.
+ *
+ * Values this parser cannot read are reported rather than skipped: an
+ * `RDATE;VALUE=PERIOD` was silently ignored, leaving the model with no record
+ * of it, and the writer then dropped the property entirely.
+ */
+function collectDateList(props: Prop[]): { instants: number[]; unreadable: string[]; zones: string[] } {
+  const instants: number[] = [];
+  const unreadable: string[] = [];
+  const zones: string[] = [];
   for (const p of props) {
     const tzid = getParam(p, 'TZID');
+    if (tzid) zones.push(tzid);
+    const valueType = (getParam(p, 'VALUE') ?? '').toUpperCase();
+    if (valueType === 'PERIOD') {
+      unreadable.push(`${p.name};VALUE=PERIOD`);
+      continue;
+    }
     for (const piece of p.value.split(',')) {
       const dt = parseDateTime(piece, tzid);
-      if (dt) out.push(dt.ms);
+      if (dt) instants.push(dt.ms);
+      else unreadable.push(`${p.name}:${piece}`);
     }
   }
-  return out;
+  return { instants, unreadable, zones };
 }
 
 /**
@@ -116,12 +133,12 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   if (!dtstartProp) return null;
   const tzid = getParam(dtstartProp, 'TZID');
   let timeZoneUnresolved: string | undefined;
-  if (tzid && !isKnownTimeZone(tzid)) {
-    timeZoneUnresolved = tzid;
-    warnings.push(
-      `TZID "${tzid}" is not one this browser can resolve, so every time in this series would be a guess.`,
-    );
-  }
+  const noteZone = (z: string | undefined, where: string) => {
+    if (!z || isKnownTimeZone(z)) return;
+    timeZoneUnresolved ??= z;
+    warnings.push(`TZID "${z}" on ${where} is not one this browser can resolve.`);
+  };
+  noteZone(tzid, 'DTSTART');
   const dtstart = parseDateTime(dtstartProp.value, tzid);
   if (!dtstart) return null;
 
@@ -143,8 +160,16 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
     if (dur) durationMs = parseDuration(dur.value);
   }
 
-  const exdates = collectDateList(getProps(master, 'EXDATE'));
-  const rdates = collectDateList(getProps(master, 'RDATE'));
+  const ex = collectDateList(getProps(master, 'EXDATE'));
+  const rd = collectDateList(getProps(master, 'RDATE'));
+  const exdates = ex.instants;
+  const rdates = rd.instants;
+  const unreadableDates = [...ex.unreadable, ...rd.unreadable];
+
+  // Every date-bearing property carries its own TZID, and an unresolvable one
+  // anywhere makes that instant a guess — not only on DTSTART.
+  noteZone(getParam(getProp(master, 'DTEND') ?? { name: '', params: [], value: '' }, 'TZID'), 'DTEND');
+  for (const z of [...ex.zones, ...rd.zones]) noteZone(z, 'EXDATE/RDATE');
 
   const overrides = new Map<number, Component>();
   for (const ev of events) {
@@ -156,6 +181,7 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
         'An override uses RECURRENCE-ID;RANGE=THISANDFUTURE, whose forward effect cannot be re-anchored safely.',
       );
     }
+    noteZone(getParam(rid, 'TZID'), 'RECURRENCE-ID');
     const dt = parseDateTime(rid.value, getParam(rid, 'TZID') ?? tzid);
     if (dt) overrides.set(dt.ms, ev);
   }
@@ -176,11 +202,14 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
     ...exdates, ...rdates, ...[...overrides.keys()],
   );
   const LIMIT = 20000;
+  // Expand one past the limit so a series of exactly LIMIT occurrences is not
+  // mistaken for one that overflowed.
   const horizon =
     horizonMs ??
     (unbounded ? furthestException + 2 * 365 * 86400_000 : undefined);
-  const ruleSlots = expandRRule(dtstart.ms, rule, tzid, { maxMs: horizon, limit: LIMIT });
-  const truncated = ruleSlots.length >= LIMIT;
+  const expanded = expandRRule(dtstart.ms, rule, tzid, { maxMs: horizon, limit: LIMIT + 1 });
+  const truncated = expanded.length > LIMIT;
+  const ruleSlots = truncated ? expanded.slice(0, LIMIT) : expanded;
   const ruleSet = new Set(ruleSlots);
   const slots = [...ruleSlots];
   for (const r of rdates) if (!ruleSet.has(r)) slots.push(r);
@@ -251,6 +280,7 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
     overrides,
     occurrences,
     timeZoneUnresolved,
+    unreadableDates,
     unbounded,
     truncated,
     modelledUntilMs: horizon ?? (ruleSlots.length ? ruleSlots[ruleSlots.length - 1] : dtstart.ms),

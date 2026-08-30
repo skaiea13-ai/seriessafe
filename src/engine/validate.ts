@@ -1,7 +1,7 @@
-import { type Component, type Prop, getProp, getParam } from '../ics/types.ts';
-import { parseIcs, formatDateTime } from '../ics/parse.ts';
+import { type Component, type Prop, getProp } from '../ics/types.ts';
+import { parseIcs } from '../ics/parse.ts';
 import { serializeIcs } from '../ics/serialize.ts';
-import { buildSeriesGraph, type SeriesGraph } from './series.ts';
+import { buildSeriesGraph, formatLike, type SeriesGraph } from './series.ts';
 import { formatHuman, type SplitPlan } from './split.ts';
 
 export interface Check {
@@ -155,15 +155,27 @@ export function validateStage(
     const REWRITTEN = ['RRULE', 'EXDATE', 'RDATE', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'];
     if (!oldMasterAfter) contentProblems.push('the original series master is gone');
     else {
-      for (const p of before.master.props) {
-        if (REWRITTEN.includes(p.name)) continue;
-        if (!oldMasterAfter.props.some((q) => q.name === p.name && q.value === p.value)) {
-          contentProblems.push(`${p.name} lost from the original series`);
+      // Compared with parameters, and by multiplicity, so a duplicated or
+      // subtly altered property cannot pass as present.
+      const bag = (c: Component) => {
+        const m = new Map<string, number>();
+        for (const p of c.props) {
+          if (REWRITTEN.includes(p.name)) continue;
+          const k = `${p.name}[${p.params.map((x) => `${x.name}=${[...x.values].sort().join(',')}`).sort().join(';')}]=${p.value}`;
+          m.set(k, (m.get(k) ?? 0) + 1);
         }
+        return m;
+      };
+      const wanted = bag(before.master);
+      const found = bag(oldMasterAfter);
+      for (const [k, n] of wanted) {
+        if ((found.get(k) ?? 0) !== n) contentProblems.push(`${k.split('[')[0]} lost or altered on the original series`);
       }
-      const alarmsA = before.master.children.filter((c) => c.name === 'VALARM').length;
-      const alarmsB = oldMasterAfter.children.filter((c) => c.name === 'VALARM').length;
-      if (alarmsA !== alarmsB) contentProblems.push('the original series lost an alarm');
+      const alarmsA = before.master.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
+      const alarmsB = oldMasterAfter.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
+      if (alarmsA.join('|') !== alarmsB.join('|')) {
+        contentProblems.push('a reminder on the original series was lost or changed');
+      }
     }
 
     const same = timingSame && contentProblems.length === 0;
@@ -222,20 +234,29 @@ export function validateStage(
         if ((getProp(c, 'UID')?.value ?? '') !== plan.newUid) return false;
         const rid = getProp(c, 'RECURRENCE-ID');
         if (!rid) return false;
-        const want = formatDateTime(r.newSlotMs, {
-          tzid: getParam(rid, 'TZID') ?? tz,
-          isDate: before.isDate,
-        });
-        return rid.value === want;
+        // Formatted in the series' own value type, or the UTC form is missing
+        // its Z and nothing matches.
+        return rid.value === formatLike(before, r.newSlotMs);
       });
       if (hits.length !== 1) {
         problems.push(`${fmt(r.oldSlotMs)} resolved to ${hits.length} events (expected exactly 1)`);
         continue;
       }
       const slot = newAfter.find((o) => o.slotMs === r.newSlotMs);
-      if (!slot || slot.startMs !== r.keptStartMs) {
+      const src = before.overrides.get(r.oldSlotMs);
+      const isCancellation =
+        (src && (getProp(src, 'STATUS')?.value ?? '').toUpperCase() === 'CANCELLED') || false;
+      if (!slot) {
+        problems.push(`${fmt(r.oldSlotMs)} has no occurrence at its new slot`);
+      } else if (isCancellation) {
+        // A called-off occurrence has no start time to keep; what matters is
+        // that it is still called off, and still carries what was attached.
+        if (!slot.cancelled) {
+          problems.push(`${fmt(r.oldSlotMs)} was called off but is no longer cancelled`);
+        }
+      } else if (slot.startMs !== r.keptStartMs) {
         problems.push(
-          `${fmt(r.oldSlotMs)} should still start at ${fmt(r.keptStartMs ?? 0)} but starts at ${fmt(slot?.startMs ?? 0)}`,
+          `${fmt(r.oldSlotMs)} should still start at ${fmt(r.keptStartMs ?? 0)} but starts at ${fmt(slot.startMs)}`,
         );
       }
     }
@@ -263,10 +284,7 @@ export function validateStage(
         if (c.name !== 'VEVENT') return false;
         if ((getProp(c, 'UID')?.value ?? '') !== plan.newUid) return false;
         const rid = getProp(c, 'RECURRENCE-ID');
-        return !!rid && rid.value === formatDateTime(r.newSlotMs, {
-          tzid: getParam(rid, 'TZID') ?? tz,
-          isDate: before.isDate,
-        });
+        return !!rid && rid.value === formatLike(before, r.newSlotMs);
       });
       if (!src || !dst) continue;
       for (const p of src.props) {
@@ -331,18 +349,42 @@ export function validateStage(
   // 7. Meeting count reconciles.
   {
     const pastCount = oldAfter.filter((o) => !o.cancelled).length;
-    const futureCount = newAfter.filter((o) => !o.cancelled).length;
-    const expected = origBefore.filter((o) => !o.cancelled).length;
-    const got = pastCount + futureCount;
-    const scope = before.unbounded
-      ? ` (counted to ${fmt(window)}, since the series has no end)`
-      : '';
-    checks.push({
-      id: 'count-reconciles',
-      title: 'The total number of real meetings is unchanged',
-      pass: got === expected,
-      evidence: `${pastCount} kept + ${futureCount} moved = ${got}; originally ${expected}${scope}.`,
-    });
+
+    if (!before.unbounded) {
+      const futureCount = newAfter.filter((o) => !o.cancelled).length;
+      const expected = origBefore.filter((o) => !o.cancelled).length;
+      const got = pastCount + futureCount;
+      checks.push({
+        id: 'count-reconciles',
+        title: 'The total number of real meetings is unchanged',
+        pass: got === expected,
+        evidence: `${pastCount} kept + ${futureCount} moved = ${got}; originally ${expected}.`,
+      });
+    } else {
+      /*
+       * A series with no end has no total to compare, and counting both sides
+       * up to some wall-clock instant is not a fair test: the old and new
+       * rules fall on different weekdays, so the last few days of any window
+       * naturally hold a different number of meetings. Comparing prefixes of
+       * equal length asks the question that actually matters — over the same
+       * number of occurrences, does the same number of meetings survive — and
+       * the new rule must still have no end.
+       */
+      const oldFuture = origBefore.filter((o) => o.slotMs >= effective);
+      const n = Math.min(oldFuture.length, newAfter.length);
+      const beforeN = oldFuture.slice(0, n).filter((o) => !o.cancelled).length;
+      const afterN = newAfter.slice(0, n).filter((o) => !o.cancelled).length;
+      const stillOpen = !/COUNT=|UNTIL=/.test(plan.newRuleText);
+      checks.push({
+        id: 'count-reconciles',
+        title: 'The same meetings survive, and the series still has no end',
+        pass: beforeN === afterN && stillOpen,
+        evidence: !stillOpen
+          ? `The new rule acquired an end: ${plan.newRuleText}.`
+          : `${pastCount} kept before the change; over the next ${n} occurrences, ${beforeN} real meetings ` +
+            `before and ${afterN} after.`,
+      });
+    }
   }
 
   // 8. Nothing else in the file was touched.

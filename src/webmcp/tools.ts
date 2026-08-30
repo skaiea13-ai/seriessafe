@@ -1,4 +1,4 @@
-import { parseIcs } from '../ics/parse.ts';
+import { parseIcs, startOfDayInZone } from '../ics/parse.ts';
 import { serializeIcs } from '../ics/serialize.ts';
 import { cloneComponent } from '../ics/types.ts';
 import { buildSeriesGraph, listRecurringUids } from '../engine/series.ts';
@@ -85,31 +85,27 @@ function requireGraph() {
   return state.graph;
 }
 
-/** Parse "2026-09-01" (or a full ISO instant) into UTC ms in the series zone. */
+/** Resolve an effective date to the instant that day begins in the series' zone. */
 function parseEffectiveDate(input: string, tzid?: string): number | null {
-  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.trim());
-  if (dateOnly) {
-    const [, y, m, d] = dateOnly;
-    // Midnight local time in the series' own zone.
-    const naive = Date.UTC(+y, +m - 1, +d, 0, 0, 0);
-    if (!tzid) return naive;
-    // Correct for the zone offset at that wall-clock moment.
-    const probe = new Intl.DateTimeFormat('en-US', {
-      timeZone: tzid, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    }).formatToParts(new Date(naive));
-    const get = (t: string) => +(probe.find((p) => p.type === t)?.value ?? '0');
-    let hh = get('hour'); if (hh === 24) hh = 0;
-    const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), hh, get('minute'), get('second'));
-    return naive - (asUtc - naive);
-  }
-  const t = Date.parse(input);
-  return Number.isFinite(t) ? t : null;
+  return startOfDayInZone(input, tzid);
 }
 
 /* ------------------------------------------------------------------ */
 /* Core operations, shared by the tools and the human UI               */
 /* ------------------------------------------------------------------ */
+
+/** Clear everything and bring the conditional tools back in line. */
+export function resetAll(): void {
+  state.calendar = null;
+  state.filename = '';
+  state.uids = [];
+  state.selectedUid = null;
+  state.graph = null;
+  state.commit = null;
+  resetDownstream();
+  syncDynamicTools();
+  notify();
+}
 
 export function doLoadCalendar(text: string, filename: string): string {
   const cal = parseIcs(text);

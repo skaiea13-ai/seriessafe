@@ -257,3 +257,20 @@ export function unescapeText(v: string): string {
 export function escapeText(v: string): string {
   return v.replace(/([\;,])/g, '\\$1').replace(/\n/g, '\\n');
 }
+
+/**
+ * The instant a calendar date begins in a given zone.
+ *
+ * Deriving this from a single offset lookup at UTC midnight is wrong on a DST
+ * boundary: in Australia/Sydney on 2026-10-04 it landed an hour early, pulling
+ * the previous evening's meeting into the future half of a split.
+ */
+export function startOfDayInZone(input: string, tzid?: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.trim());
+  if (!m) {
+    const t = Date.parse(input);
+    return Number.isFinite(t) ? t : null;
+  }
+  const [, y, mo, d] = m;
+  return tzid ? zonedToUtc(+y, +mo - 1, +d, 0, 0, 0, tzid) : Date.UTC(+y, +mo - 1, +d);
+}

@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test:webmcp": "node tools/webmcp-e2e.mjs",
     "test:a11y": "node tools/a11y-audit.mjs",
-    "test:responsive": "node tools/responsive-check.mjs"
+    "test:responsive": "node tools/responsive-check.mjs",
+    "test:sweep": "node tools/sweep.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

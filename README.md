@@ -90,6 +90,9 @@ Staging is refused, with a remedy, when SeriesSafe cannot prove the outcome:
 | `UNRESOLVED_TIME_ZONE` | The `TZID` is not one the browser can resolve, so every instant would be a guess. |
 | `SERIES_TOO_LARGE` | The series exceeds the modelling limit, so it cannot be checked exhaustively. |
 | `INVALID_TIME_OF_DAY` | The requested start time is not readable as `HH:MM`. |
+| `UNSUPPORTED_RESULT_RULE` | The change would *produce* a rule this engine cannot expand exactly. |
+| `UNREADABLE_DATE_VALUE` | The file contains date values this parser cannot read, such as `RDATE;VALUE=PERIOD`. |
+| `TIME_ON_ALL_DAY_SERIES` | An all-day series has no start time to change. |
 | `END_DATE_DROPS_MEETINGS` | Holding the old end date would quietly cost a meeting. |
 | `NOTHING_AFTER_DATE` / `NOTHING_BEFORE_DATE` | There is no split to make. |
 
@@ -145,11 +148,11 @@ Both themes currently report zero contrast failures, no touch target under 24px,
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
-Thirty-five tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+Forty-four tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
 
 ```bash
 npm install
-npm test           # 35 unit and integration tests
+npm test           # 44 unit and integration tests
 npm run test:webmcp   # 34 checks against real Chrome WebMCP (macOS Chrome 149+)
 npm run dev
 ```

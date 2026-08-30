@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ICAL from 'ical.js';
 
-import { parseIcs, zonedToUtc } from '../src/ics/parse.ts';
+import { parseIcs, zonedToUtc, startOfDayInZone } from '../src/ics/parse.ts';
 import { serializeIcs } from '../src/ics/serialize.ts';
 import { getProp } from '../src/ics/types.ts';
 import { buildSeriesGraph } from '../src/engine/series.ts';
@@ -266,4 +266,118 @@ test('the side-by-side result is measured from both calendars, not predicted', (
     assert.equal(item.inSeriesSafe, true, `${item.what} ${item.when} should survive`);
     assert.equal(item.inConventional, false, `${item.what} ${item.when} should be lost`);
   }
+});
+
+/* ---- second review round ------------------------------------------ */
+
+test('a date boundary is resolved in the series zone, across a DST change', () => {
+  // Australia/Sydney moves to daylight time on 2026-10-04. Deriving midnight
+  // from a single offset lookup landed an hour early, pulling the previous
+  // evening's meeting into the future half of the split.
+  const midnight = startOfDayInZone('2026-10-04', 'Australia/Sydney')!;
+  const local = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Australia/Sydney', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(midnight));
+  assert.equal(local, '00:00', `the day must begin at midnight locally, got ${local}`);
+
+  const ics = wrap(['DTSTART;TZID=Australia/Sydney:20260303T233000',
+                    'DTEND;TZID=Australia/Sydney:20260304T003000',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261229T120000Z'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  const plan = simulateSplit(g, { effectiveFromMs: midnight, byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  const strays = plan.pastOccurrences.filter((o) => o.slotMs >= midnight);
+  assert.equal(strays.length, 0, 'nothing before the boundary is treated as after it');
+});
+
+test('a rule SeriesSafe would not accept is not one it will write', () => {
+  // Adding BYDAY to a DAILY series produced FREQ=DAILY;BYDAY=TH, expanded here
+  // as consecutive days and read by everyone else as Thursdays.
+  const ics = wrap(['DTSTART:20260302T090000Z', 'DTEND:20260302T100000Z',
+                    'RRULE:FREQ=DAILY;COUNT=30'].join('\r\n'));
+  const { plan } = attempt(ics, Date.UTC(2026, 2, 9), ['TH']);
+  assert.ok(!plan.ok);
+  assert.ok(codes(plan).includes('UNSUPPORTED_RESULT_RULE'), codes(plan).join(','));
+});
+
+test('date values that cannot be read stop the operation', () => {
+  // RDATE;VALUE=PERIOD was skipped by the parser, so the writer dropped it.
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40',
+                    'RDATE;VALUE=PERIOD:20261014T090000Z/PT2H'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  assert.ok(g.unreadableDates.some((d) => /PERIOD/.test(d)), 'the parser reports it');
+  const { plan } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(!plan.ok);
+  assert.ok(codes(plan).includes('UNREADABLE_DATE_VALUE'), codes(plan).join(','));
+});
+
+test('an unresolvable zone is caught on any date property, not just DTSTART', () => {
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40',
+                    'EXDATE;TZID=Custom/Seoul:20260505T180000'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  assert.equal(g.timeZoneUnresolved, 'Custom/Seoul');
+  const { plan } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(!plan.ok);
+  assert.ok(codes(plan).includes('UNRESOLVED_TIME_ZONE'), codes(plan).join(','));
+});
+
+test('an occurrence called off by STATUS keeps what was attached to it', () => {
+  // Converting it to a bare EXDATE dropped the note and the reminder, and left
+  // the original event stranded on the series being truncated.
+  const ics = wrap(
+    ['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z', 'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=40'].join('\r\n'),
+    ['BEGIN:VEVENT', `UID:${UID}`, 'DTSTAMP:20260901T000000Z',
+     'DTSTART:20260915T090000Z', 'DTEND:20260915T100000Z', 'RECURRENCE-ID:20260915T090000Z',
+     'STATUS:CANCELLED', 'SUMMARY:X', 'COMMENT:Called off, room flooded',
+     'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:n/a', 'TRIGGER:-PT30M', 'END:VALARM',
+     'END:VEVENT'].join('\r\n'),
+  );
+  const { plan, out, report } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(report!.pass, report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+  assert.match(out, /Called off, room flooded/, 'the note survives');
+  assert.match(out, /BEGIN:VALARM/, 'the reminder survives');
+  assert.doesNotMatch(out, /RECURRENCE-ID:20260915T090000Z/, 'and it is not left on the old series');
+});
+
+test('an all-day series refuses a start time rather than ignoring it', () => {
+  const ics = wrap(['DTSTART;VALUE=DATE:20260302', 'DTEND;VALUE=DATE:20260303',
+                    'RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=30'].join('\r\n'));
+  const { plan } = attempt(ics, Date.UTC(2026, 8, 1), ['TU'], { timeOfDay: '09:00' });
+  assert.ok(!plan.ok);
+  assert.ok(codes(plan).includes('TIME_ON_ALL_DAY_SERIES'), codes(plan).join(','));
+});
+
+test('the comparison looks only at the series being changed', () => {
+  // Searching the whole file let an unrelated event sharing an instant make a
+  // destroyed item look preserved.
+  const ics =
+    'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n' +
+    `BEGIN:VEVENT\r\nUID:${UID}\r\nDTSTAMP:20260101T000000Z\r\n` +
+    'DTSTART:20260303T090000Z\r\nDTEND:20260303T100000Z\r\n' +
+    'RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261229T090000Z\r\n' +
+    'RDATE:20261111T090000Z\r\nSUMMARY:X\r\nEND:VEVENT\r\n' +
+    // An unrelated series that happens to meet at the very same instant.
+    'BEGIN:VEVENT\r\nUID:other@test\r\nDTSTAMP:20260101T000000Z\r\n' +
+    'DTSTART:20261111T090000Z\r\nDTEND:20261111T100000Z\r\n' +
+    'RRULE:FREQ=WEEKLY;BYDAY=WE;COUNT=3\r\nSUMMARY:X\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n';
+  const cal = parseIcs(ics);
+  const g = buildSeriesGraph(cal, UID)!;
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  const cmp = compareResults(g, plan, applySplit(cal, g, plan).calendar, applyNaive(cal, g, plan).calendar);
+  const added = cmp.items.find((i) => i.what === 'Added session')!;
+  assert.ok(added, 'the added session is compared');
+  assert.equal(added.inSeriesSafe, true);
+  assert.equal(added.inConventional, false, 'the unrelated series must not stand in for it');
+});
+
+test('a series of exactly the modelling limit is not called too large', () => {
+  const ics = wrap(['DTSTART:20260101T090000Z', 'DTEND:20260101T100000Z',
+                    'RRULE:FREQ=DAILY;COUNT=20000'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  assert.equal(g.occurrences.length, 20000);
+  assert.equal(g.truncated, false, 'exactly at the limit is complete, not overflowing');
 });
