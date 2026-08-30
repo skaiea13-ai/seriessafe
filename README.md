@@ -152,11 +152,11 @@ Both themes currently report zero contrast failures, no touch target under 24px,
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
-Eighty-one tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+Eighty-two tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
 
 ```bash
 npm install
-npm test              # 81 unit and integration tests
+npm test              # 82 unit and integration tests
 npm run test:sweep    # 405 legitimate open-ended moves, none refused
 npm run test:webmcp   # 34 checks against real Chrome WebMCP (macOS, Chrome 149+)
 npm run test:a11y     # contrast, targets, focus, overflow — both themes
@@ -182,7 +182,7 @@ The operating surface is deliberately narrow, and everything outside it is refus
 
 **Operated on:** `FREQ=WEEKLY` only — and now actually enforced, rather than documented and quietly ignored. With `INTERVAL`, `BYDAY`, `COUNT`, `UNTIL` and `WKST`; UTC, floating and `TZID` times with DST-correct wall-clock arithmetic including gap and fold, including the zone names Exchange invents for itself (`Pacific Standard Time`) by reading the `VTIMEZONE` the file carries; all-day (`VALUE=DATE`) series; `EXDATE`, `RDATE`, detached `RECURRENCE-ID`, `STATUS:CANCELLED` overrides, `VALARM`, `ATTENDEE` with its parameters, `X-` properties, and lossless retention of every property SeriesSafe does not itself understand.
 
-Twelve refusal codes is a lot of ways to say no, so the suite also checks the other direction: the shapes Google, Outlook and Apple actually export — empty `DESCRIPTION` and `LOCATION`, `X-MICROSOFT-*` and `X-APPLE-*` properties, `LANGUAGE` parameters, an alarm carrying its own `UID`, an embedded `VTIMEZONE`, all-day `VALUE=DATE`, and open-ended rules — are all accepted and validated.
+Twenty-one refusal codes is a lot of ways to say no, so the suite checks the other direction just as hard. Ninety ordinary schedules — five time zones that observe daylight saving, six times of day people actually meet at, three effective dates around the changes — must all be accepted. So must the shapes Google, Outlook and Apple actually export — empty `DESCRIPTION` and `LOCATION`, `X-MICROSOFT-*` and `X-APPLE-*` properties, `LANGUAGE` parameters, an alarm carrying its own `UID`, an embedded `VTIMEZONE`, all-day `VALUE=DATE`, and open-ended rules — are all accepted and validated.
 
 **Refused:** any frequency other than weekly; `RANGE=THISANDFUTURE`; multiple `RRULE`s; positional parts (`BYSETPOS`, `BYWEEKNO`, `BYYEARDAY`, `BYMONTH`, `BYHOUR`…); and a start time that does not exist on the day it would first apply, because writing the corrected time into `DTSTART` would move every later occurrence with it.
 

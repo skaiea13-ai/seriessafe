@@ -306,3 +306,59 @@ test('a time zone the calendar defines itself is honoured', () => {
   // A name neither Intl nor the file knows is still refused.
   assert.equal(isKnownTimeZone('Mars/Olympus'), false);
 });
+
+test('ordinary human schedules are never refused', () => {
+  /*
+   * Twenty-one refusal codes is a lot of ways to say no, and the newest of
+   * them — refusing an occurrence that lands on a clock change — is the kind
+   * that could quietly start blocking normal calendars. This is the guard
+   * against that: five zones that observe daylight saving (and one that does
+   * not), six times of day people actually meet at, three effective dates
+   * around the changes. None of them may be refused.
+   *
+   * Only genuinely unwritable times, the small hours where a clock change
+   * lands, are rejected — and those are covered by their own test.
+   */
+  const zones = [
+    'America/New_York', 'Europe/London', 'Australia/Sydney',
+    'Asia/Seoul', 'America/Sao_Paulo',
+  ];
+  const times: Array<[string, string, string]> = [
+    ['070000', '080000', 'an early gym slot'],
+    ['090000', '093000', 'a morning standup'],
+    ['123000', '133000', 'a lunch meeting'],
+    ['180000', '193000', 'an evening class'],
+    ['193000', '213000', 'a long evening class'],
+    ['210000', '220000', 'a late call'],
+  ];
+  const dates = ['2026-02-01', '2026-06-15', '2026-10-04'];
+
+  let checked = 0;
+  for (const zone of zones) {
+    for (const [start, end, label] of times) {
+      for (const from of dates) {
+        const ics = [
+          'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//h//EN', 'BEGIN:VEVENT',
+          'UID:h@t', 'DTSTAMP:20260101T000000Z',
+          `DTSTART;TZID=${zone}:20260106T${start}`,
+          `DTEND;TZID=${zone}:20260106T${end}`,
+          'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=80', 'SUMMARY:H', 'END:VEVENT', 'END:VCALENDAR',
+        ].join('\r\n') + '\r\n';
+
+        const cal = parseIcs(ics);
+        const g = buildSeriesGraph(cal, 'h@t')!;
+        const plan = simulateSplit(g, {
+          effectiveFromMs: startOfDayInZone(from, zone)!,
+          byday: ['TH'],
+        });
+        assert.ok(plan.ok,
+          `${zone}, ${label}, from ${from}: ${plan.refusals.map((r) => r.code).join(', ')}`);
+        const report = validateStage(cal, applySplit(cal, g, plan).calendar, g, plan);
+        assert.ok(report.pass,
+          `${zone}, ${label}, from ${from}: ${report.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; ')}`);
+        checked++;
+      }
+    }
+  }
+  assert.equal(checked, 90);
+});
