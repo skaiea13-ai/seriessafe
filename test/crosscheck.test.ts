@@ -10,6 +10,8 @@ import { simulateSplit } from '../src/engine/split.ts';
 import { applySplit, applyNaive } from '../src/engine/apply.ts';
 import { validateStage } from '../src/engine/validate.ts';
 import { expandRRule, parseRRule } from '../src/engine/rrule.ts';
+import { compareResults } from '../src/engine/compare.ts';
+import { readFileSync } from 'node:fs';
 
 /**
  * Regressions from an adversarial cross-validation pass.
@@ -240,4 +242,28 @@ test('the conventional-edit control keeps what that edit would keep', () => {
   const naive = serializeIcs(applyNaive(cal, g, plan).calendar);
   assert.match(naive, /20260415T090000Z/, 'the April addition predates the split and survives');
   assert.doesNotMatch(naive, /20261111T090000Z/, 'the November one goes with the old series');
+});
+
+test('the side-by-side result is measured from both calendars, not predicted', () => {
+  // The comparison used to replay the plan's own arrays, so the headline
+  // number was an assertion about what would happen rather than a reading of
+  // what did.
+  const src = readFileSync(new URL('../fixtures/korean-class.ics', import.meta.url), 'utf8');
+  const cal = parseIcs(src);
+  const uid = 'advanced-korean-tue@school.example.com';
+  const g = buildSeriesGraph(cal, uid)!;
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 7, 31, 15), byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+
+  const safe = applySplit(cal, g, plan).calendar;
+  const naive = applyNaive(cal, g, plan).calendar;
+  const cmp = compareResults(g, plan, safe, naive);
+
+  assert.equal(cmp.items.length, 5, 'five customised occurrences are at stake');
+  assert.equal(cmp.preserved, 5, 'all five survive the SeriesSafe result');
+  assert.equal(cmp.destroyed, 5, 'none survive the conventional one');
+  for (const item of cmp.items) {
+    assert.equal(item.inSeriesSafe, true, `${item.what} ${item.when} should survive`);
+    assert.equal(item.inConventional, false, `${item.what} ${item.when} should be lost`);
+  }
 });

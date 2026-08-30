@@ -267,6 +267,7 @@ function comparisonCard(): string {
     (l) => `<li><span class="mark">${CROSS}</span><span class="txt"><strong>${esc(l.label)}</strong><em>${esc(l.detail)}</em></span></li>`,
   );
 
+  const cmp = s.comparison;
   return `
   <div class="card compare-card">
     <h2>Same request, two ways</h2>
@@ -283,18 +284,19 @@ function comparisonCard(): string {
     <div class="compare">
       <div class="pane win">
         <h3>SeriesSafe</h3>
-        <div class="count">${plan.remaps.length}</div>
-        <div class="sub">preserved and re-anchored</div>
+        <div class="count">${cmp.preserved}</div>
+        <div class="sub">still present in the file it produced</div>
         <ul>${kept.join('')}</ul>
       </div>
       <div class="pane lose">
         <h3>A conventional “this and following” edit</h3>
-        <div class="count">${plan.naiveLosses.length}</div>
-        <div class="sub">silently destroyed</div>
+        <div class="count">${cmp.destroyed}</div>
+        <div class="sub">missing from the file it produced</div>
         <ul>${lost.join('')}</ul>
       </div>
     </div>
-    <div class="row" style="margin-top:16px">
+    <p class="kbd-hint" style="margin-top:12px">Both counts are read back from the two calendars, not predicted.</p>
+    <div class="row" style="margin-top:12px">
       <button class="go" data-act="validate">Check every invariant</button>
       <button data-act="export-staged">Download the safe .ics</button>
       <button data-act="export-naive">Download the lossy one, to compare</button>

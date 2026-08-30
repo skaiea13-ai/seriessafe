@@ -2,6 +2,7 @@ import type { Component } from './ics/types.ts';
 import type { SeriesGraph } from './engine/series.ts';
 import type { SplitPlan, SplitParams, Refusal } from './engine/split.ts';
 import type { ValidationReport } from './engine/validate.ts';
+import type { Comparison } from './engine/compare.ts';
 
 export interface StagedPatch {
   params: SplitParams;
@@ -10,6 +11,8 @@ export interface StagedPatch {
   safe: Component;
   /** The calendar as a conventional client would write it. */
   naive: Component;
+  /** What each result actually contains, read back from both files. */
+  comparison: Comparison;
   stagedAt: number;
 }
 

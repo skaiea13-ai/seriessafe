@@ -5,6 +5,7 @@ import { buildSeriesGraph, listRecurringUids } from '../engine/series.ts';
 import { simulateSplit, formatHuman, type SplitParams } from '../engine/split.ts';
 import { applySplit, applyNaive } from '../engine/apply.ts';
 import { validateStage } from '../engine/validate.ts';
+import { compareResults } from '../engine/compare.ts';
 import { state, notify, logCall, resetDownstream } from '../state.ts';
 import { SAMPLE_ICS } from '../sample.ts';
 
@@ -184,7 +185,8 @@ export function doStage(params: SplitParams): string {
   state.refusals = null;
   const safe = applySplit(state.calendar!, g, plan).calendar;
   const naive = applyNaive(state.calendar!, g, plan).calendar;
-  state.staged = { params, plan, safe, naive, stagedAt: Date.now() };
+  const comparison = compareResults(g, plan, safe, naive);
+  state.staged = { params, plan, safe, naive, comparison, stagedAt: Date.now() };
   state.validation = null;
   unregisterCommit();
   notify();
@@ -583,20 +585,22 @@ export async function registerSeriesSafeTools(): Promise<boolean> {
       '"this and following" edit applies it. Use this to report concretely what the user would have lost.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     execute: async () => {
-      const g = requireGraph();
+      requireGraph();
       if (!state.staged) return fail('Nothing is staged.');
-      const { plan } = state.staged;
-      const r = ok('Side-by-side result of the same request.', {
-        seriesSafe: {
-          preserved: plan.remaps.length,
-          detail: plan.remaps.map((x) => `${x.kind} on ${formatHuman(x.oldSlotMs, g.tzid)} kept`),
-        },
-        conventionalEdit: {
-          destroyed: plan.naiveLosses.length,
-          detail: plan.naiveLosses.map((l) => `${l.label} — ${l.detail}`),
-        },
+      // Measured by re-reading both calendars, not replayed from the plan.
+      const { comparison: cmp } = state.staged;
+      const r = ok('Side-by-side result of the same request, read back from both calendars.', {
+        method: 'Both results were serialized, re-parsed, and inspected for each customised occurrence.',
+        seriesSafe: { stillPresent: cmp.preserved, of: cmp.items.length },
+        conventionalEdit: { destroyed: cmp.destroyed, of: cmp.items.length },
+        items: cmp.items.map((i) => ({
+          what: `${i.what} — ${i.when}`,
+          detail: i.detail,
+          seriesSafe: i.inSeriesSafe ? 'kept' : 'lost',
+          conventionalEdit: i.inConventional ? 'kept' : 'lost',
+        })),
       });
-      logCall('compare_with_conventional_edit', `${plan.naiveLosses.length} items differ`);
+      logCall('compare_with_conventional_edit', `${cmp.destroyed} of ${cmp.items.length} destroyed by a conventional edit`);
       return r;
     },
   });
