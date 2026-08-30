@@ -31,16 +31,33 @@ export function parseRRule(value: string): RRule {
     if (eq === -1) continue;
     parts[seg.slice(0, eq).toUpperCase()] = seg.slice(eq + 1);
   }
+  const freq = (parts.FREQ?.toUpperCase() as Freq) ?? 'WEEKLY';
   const unsupported: Record<string, string> = {};
   for (const [k, v] of Object.entries(parts)) {
     if (!KNOWN_PARTS.has(k)) unsupported[k] = v;
+  }
+
+  /*
+   * Expansion only implements the parts below for the frequencies that use
+   * them. Anything else is recorded as unsupported so staging refuses, rather
+   * than being expanded to plausible-looking but wrong dates: `FREQ=MONTHLY;
+   * BYDAY=1MO` once produced the first of every month instead of the first
+   * Monday, and nothing flagged it.
+   */
+  if (freq !== 'WEEKLY' && parts.BYDAY) unsupported.BYDAY = parts.BYDAY;
+  if (freq !== 'MONTHLY' && parts.BYMONTHDAY) unsupported.BYMONTHDAY = parts.BYMONTHDAY;
+  if (freq === 'YEARLY' && (parts.BYDAY || parts.BYMONTHDAY)) {
+    unsupported.FREQ = 'YEARLY with BY* parts';
+  }
+  if (!['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(freq)) {
+    unsupported.FREQ = parts.FREQ ?? '(missing)';
   }
 
   const untilRaw = parts.UNTIL;
   const untilDt = untilRaw ? parseDateTime(untilRaw) : null;
 
   return {
-    freq: (parts.FREQ?.toUpperCase() as Freq) ?? 'WEEKLY',
+    freq,
     interval: parts.INTERVAL ? Math.max(1, parseInt(parts.INTERVAL, 10)) : 1,
     byday: parts.BYDAY ? parts.BYDAY.split(',').map((d) => d.trim().toUpperCase()) : [],
     bymonthday: parts.BYMONTHDAY

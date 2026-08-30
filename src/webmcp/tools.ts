@@ -26,17 +26,46 @@ let commitController: AbortController | null = null;
 let undoController: AbortController | null = null;
 
 /**
- * Withdraw a tool *after* the current call has returned.
+ * Withdraw a self-deregistering tool once its own call has returned.
  *
- * `commit_staged_split` and `undo_series_split` deregister themselves as their
+ * `commit_staged_split` and `undo_series_split` withdraw themselves as their
  * last act. Registration is cancelled through an AbortSignal, and up to Chrome
  * 152 aborting that signal also cancels the execution still in flight — the
  * call fails with "The operation failed for an unknown transient reason" even
- * though the work completed. Chrome 153 changed this, but deferring by a task
- * is correct on every version.
+ * though the work completed. Chrome 153 changed this; deferring by a task is
+ * correct on every version.
+ *
+ * The controller live at scheduling time is captured, so if the tool has since
+ * been registered afresh the deferred withdrawal leaves the new one alone.
  */
-function withdrawAfterReturn(fn: () => void): void {
-  setTimeout(fn, 0);
+function withdrawAfterReturn(which: 'commit' | 'undo', ctrl: AbortController | null): void {
+  setTimeout(() => {
+    if (which === 'commit') {
+      if (commitController !== ctrl) return;
+      unregisterCommit();
+    } else {
+      if (undoController !== ctrl) return;
+      unregisterUndo();
+    }
+  }, 0);
+}
+
+/**
+ * Bring the conditional tools back in line with the state.
+ *
+ * Commit exists only while a staged patch has passed validation, and undo only
+ * while there is a commit to revert. Anything that invalidates those — loading
+ * another calendar, selecting another series — must be reflected in the tool
+ * list, not merely inside the tool body.
+ */
+function syncDynamicTools(): void {
+  const commitAllowed = Boolean(state.staged && state.validation?.pass);
+  if (commitAllowed) registerCommit();
+  else if (commitController) unregisterCommit();
+
+  const undoAllowed = Boolean(state.commit);
+  if (undoAllowed) registerUndo();
+  else if (undoController) unregisterUndo();
 }
 
 const DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
@@ -91,6 +120,7 @@ export function doLoadCalendar(text: string, filename: string): string {
   state.graph = null;
   state.commit = null;
   resetDownstream();
+  syncDynamicTools();
   notify();
   if (!uids.length) return fail('That calendar contains no recurring events to operate on.');
   return ok(`Loaded ${filename}: ${uids.length} recurring series.`, {
@@ -108,6 +138,7 @@ export function doSelectSeries(uid: string): string {
   state.selectedUid = uid;
   state.graph = g;
   resetDownstream();
+  syncDynamicTools();
   notify();
   const counts = {
     total: g.occurrences.length,
@@ -216,7 +247,7 @@ export function doCommit(): string {
   state.staged = null;
   state.validation = null;
   registerUndo();
-  withdrawAfterReturn(unregisterCommit);
+  withdrawAfterReturn('commit', commitController);
   notify();
   return ok(
     `Committed. ${preserved} item(s) that a conventional edit would have destroyed are still present. ` +
@@ -233,7 +264,7 @@ export function doUndo(): string {
   const what = state.commit.summary;
   state.commit = null;
   resetDownstream();
-  withdrawAfterReturn(unregisterUndo);
+  withdrawAfterReturn('undo', undoController);
   notify();
   return ok(`Reverted: ${what}`);
 }

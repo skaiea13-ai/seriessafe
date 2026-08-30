@@ -1,7 +1,8 @@
 import { getProp, getProps, getParam } from '../ics/types.ts';
 import { formatDateTime, parseDateTime } from '../ics/parse.ts';
 import { expandRRule, formatRRule, type RRule } from './rrule.ts';
-import { PRESERVED_PROPS, type SeriesGraph, type Occurrence } from './series.ts';
+import { tzOffsetMs } from '../ics/parse.ts';
+import { PRESERVED_PROPS, formatUntil, type SeriesGraph, type Occurrence } from './series.ts';
 
 export interface SplitParams {
   /** Everything at or after this instant belongs to the new series. */
@@ -100,11 +101,14 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
   const { effectiveFromMs } = params;
 
   // ---- fail-closed input checks -------------------------------------
-  const unsupported = Object.keys(graph.rule.unsupported).filter((k) => UNSAFE_RRULE_PARTS.includes(k));
+  const unsupported = Object.keys(graph.rule.unsupported);
   if (unsupported.length) {
+    const positional = unsupported.filter((k) => UNSAFE_RRULE_PARTS.includes(k));
     refusals.push({
       code: 'UNSUPPORTED_RRULE_PART',
-      message: `The rule uses ${unsupported.join(', ')}, which changes how positions are counted.`,
+      message: positional.length
+        ? `The rule uses ${positional.join(', ')}, which changes how positions are counted.`
+        : `The rule uses ${unsupported.join(', ')}, which this engine does not expand exactly.`,
       remedy: 'Split this series manually, or remove the unsupported parts before retrying.',
     });
   }
@@ -125,6 +129,25 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
       });
       break;
     }
+  }
+
+  if (graph.timeZoneUnresolved) {
+    refusals.push({
+      code: 'UNRESOLVED_TIME_ZONE',
+      message:
+        `The series is written in the time zone "${graph.timeZoneUnresolved}", which this browser cannot ` +
+        'resolve, so every instant would be a guess.',
+      remedy:
+        'Re-export the calendar using an IANA time zone such as Asia/Seoul, or convert the series to UTC.',
+    });
+  }
+
+  if (graph.truncated) {
+    refusals.push({
+      code: 'SERIES_TOO_LARGE',
+      message: 'The series has more occurrences than this tool will model, so it cannot be checked exhaustively.',
+      remedy: 'Split the series into shorter runs, or bound it with an end date, then retry.',
+    });
   }
 
   const past = graph.occurrences.filter((o) => o.slotMs < effectiveFromMs);
@@ -213,16 +236,30 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
     count: undefined,
   };
 
-  if (endPolicy === 'preserve-count') {
+  if (endPolicy === 'preserve-count' && !graph.unbounded) {
     // An explicit COUNT is unambiguous: the user keeps every remaining meeting
     // even though the last one now lands on a different weekday.
     newRule.count = neededCount;
+    newRule.until = undefined;
+    newRule.untilRaw = undefined;
+  } else if (graph.unbounded) {
+    // A series with no end keeps no end. Writing a COUNT here would quietly
+    // convert a standing meeting into a finite run.
+    newRule.count = undefined;
     newRule.until = undefined;
     newRule.untilRaw = undefined;
   }
 
   // New DTSTART: the first slot of the new rule at or after the effective date,
   // carrying the requested time of day.
+  if (params.timeOfDay !== undefined && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(params.timeOfDay.trim())) {
+    refusals.push({
+      code: 'INVALID_TIME_OF_DAY',
+      message: `"${params.timeOfDay}" is not a time I can read.`,
+      remedy: 'Give the new start time as HH:MM on a 24-hour clock, for example 19:00.',
+    });
+  }
+
   const anchor = computeNewAnchor(graph, params, effectiveFromMs);
   if (anchor === null) {
     refusals.push({
@@ -233,7 +270,10 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
   }
 
   const newDtstartMs = anchor ?? effectiveFromMs;
-  const horizon = future.length ? future[future.length - 1].slotMs + 400 * 86400_000 : newDtstartMs;
+  const horizon = Math.max(
+    future.length ? future[future.length - 1].slotMs : newDtstartMs,
+    graph.modelledUntilMs,
+  ) + 400 * 86400_000;
   const newSlots = anchor === null
     ? []
     : expandRRule(newDtstartMs, newRule, graph.tzid, { maxMs: horizon, limit: 2000 });
@@ -242,14 +282,47 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
   const remaps: RemapEntry[] = [];
   const naiveLosses: LossEntry[] = [];
 
-  // Ordinal alignment is computed over *pattern* slots only. An RDATE extra is
-  // not part of the pattern, so counting it would shift every later exception
-  // by one and silently move the wrong week.
+  /*
+   * Exceptions are carried by *week*, not by a flat position.
+   *
+   * "That week is off" is what the user meant, so an exception moves to the
+   * slot holding the same place in the same week. A flat ordinal only agrees
+   * with that while every week has the same number of slots on both sides —
+   * and it silently disagrees in the boundary week, where the effective date
+   * can cut a different number of meetings from each rule. Moving a Tue/Thu
+   * class to Mon/Wed from a Tuesday put a Thursday cancellation on the
+   * *following* Monday.
+   */
   const patternFuture = future.filter((o) => o.kind !== 'extra');
+  const wkst = graph.rule.wkst;
+  const oldWeeks = byWeek(patternFuture.map((o) => o.slotMs), graph.tzid, wkst);
+  const newWeeks = byWeek(newSlots, graph.tzid, wkst);
+
   const specialFuture = future.filter((o) => o.kind !== 'normal');
   for (const occ of specialFuture) {
-    const ordinal = occ.kind === 'extra' ? -1 : patternFuture.indexOf(occ);
-    const target = occ.kind === 'extra' ? occ.slotMs : newSlots[ordinal];
+    let target: number | undefined;
+    let ordinal = -1;
+    if (occ.kind === 'extra') {
+      target = occ.slotMs;
+    } else {
+      const week = weekKey(occ.slotMs, graph.tzid, wkst);
+      const oldRow = oldWeeks.get(week) ?? [];
+      const newRow = newWeeks.get(week) ?? [];
+      ordinal = oldRow.indexOf(occ.slotMs);
+      if (oldRow.length !== newRow.length) {
+        refusals.push({
+          code: 'WEEK_NOT_ALIGNED',
+          message:
+            `The week of ${formatHuman(week, graph.tzid)} has ${oldRow.length} meeting(s) under the old rule ` +
+            `and ${newRow.length} under the new one, so "${labelOf(occ, graph)}" cannot be matched to a slot ` +
+            'in the same week.',
+          remedy:
+            'Choose an effective date at the start of a week, or keep the same days so each week lines up.',
+        });
+        continue;
+      }
+      target = newRow[ordinal];
+    }
 
     // Everything special in the future is destroyed by the conventional edit.
     naiveLosses.push(describeLoss(occ, graph));
@@ -257,7 +330,7 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
     if (target === undefined) {
       refusals.push({
         code: 'ORDINAL_OUT_OF_RANGE',
-        message: `The new rule has no slot #${ordinal + 1} to carry "${labelOf(occ, graph)}".`,
+        message: `The new rule has no slot in that week to carry "${labelOf(occ, graph)}".`,
         remedy: 'Extend the new rule, or handle that occurrence separately.',
       });
       continue;
@@ -299,10 +372,8 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
     }
   }
 
-  const untilRaw = formatDateTime(effectiveFromMs - 1000, {
-    isUtc: true,
-    isDate: false,
-  });
+  // UNTIL must share DTSTART's value type (RFC 5545 §3.3.10).
+  const untilRaw = formatUntil(graph, effectiveFromMs - 1000);
 
   const oldEndsAtMs = future.length ? future[future.length - 1].slotMs : null;
   const newEndsAtMs = newSlots.length ? newSlots[newSlots.length - 1] : null;
@@ -339,6 +410,32 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
       formatDateTime(oldEndsAtMs, { isUtc: true }).slice(0, 8) !==
         formatDateTime(newEndsAtMs, { isUtc: true }).slice(0, 8),
   };
+}
+
+const DAY_CODES = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+
+/**
+ * The start of the week an instant belongs to, in the series' own zone,
+ * anchored at the rule's WKST. Used as the identity an exception is carried by.
+ */
+function weekKey(ms: number, tzid: string | undefined, wkst: string): number {
+  const offset = tzid ? tzOffsetMs(ms, tzid) : 0;
+  const local = new Date(ms + offset);
+  const wkstIdx = Math.max(0, DAY_CODES.indexOf(wkst));
+  const back = (local.getUTCDay() - wkstIdx + 7) % 7;
+  return Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() - back);
+}
+
+/** Group instants by the week they fall in, preserving order within a week. */
+function byWeek(slots: number[], tzid: string | undefined, wkst: string): Map<number, number[]> {
+  const m = new Map<number, number[]>();
+  for (const s of slots) {
+    const k = weekKey(s, tzid, wkst);
+    const arr = m.get(k);
+    if (arr) arr.push(s);
+    else m.set(k, [s]);
+  }
+  return m;
 }
 
 function computeNewAnchor(graph: SeriesGraph, params: SplitParams, fromMs: number): number | null {

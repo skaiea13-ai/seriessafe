@@ -36,15 +36,17 @@ SeriesSafe:
 
 Everything runs in the tab. No calendar account, no upload, no server.
 
-## The idea that makes it safe: ordinal alignment
+## The idea that makes it safe: week-anchored alignment
 
-The Nth remaining occurrence of the old rule maps to the Nth occurrence of the new rule.
+An exception moves to the slot holding the same place **in the same week**.
 
-A cancellation on the *second* remaining Tuesday becomes a cancellation on the *second* remaining Thursday — because "that week is off" is indexed by week, not by calendar date.
+A cancellation on a Tuesday becomes a cancellation on that week's Thursday — because "that week is off" is indexed by week, not by calendar date.
+
+A flat position would be simpler, and wrong. It agrees with week identity only while every week has the same number of slots on both sides, and it disagrees precisely in the boundary week, where the effective date can cut a different number of meetings from each rule. When a week cannot be matched one-to-one, the change is refused rather than guessed.
 
 A detached override is re-anchored the same way, but **keeps its own start time**. A make-up already moved to Wednesday 16 September stays on Wednesday 16 September; only the slot it hangs from moves to Thursday 17 September. That single distinction is what stops it from being either absorbed into the new pattern or duplicated beside it.
 
-Explicit added dates (`RDATE`) are not part of the pattern, so they are excluded from the ordinal count and keep their own dates. Counting them would shift every later exception by one week — a bug this project had, caught by its own validator, and now covered by a regression test.
+An `RDATE` the rule does not already produce is not part of the pattern, so it is excluded from the count and keeps its own date. One that *does* coincide with a rule slot is simply that slot — treating it as an addition pulled a real occurrence out of the pattern.
 
 ## Why WebMCP, specifically
 
@@ -83,7 +85,11 @@ Staging is refused, with a remedy, when SeriesSafe cannot prove the outcome:
 | `RANGE_THISANDFUTURE` | An override that applies forward cannot be re-anchored safely. |
 | `ORDINAL_OUT_OF_RANGE` | The new rule has no slot to carry a given exception. |
 | `CADENCE_CHANGED` | The new rule meets a different number of times per period, so positions no longer line up with weeks. |
+| `WEEK_NOT_ALIGNED` | A week holds a different number of meetings under each rule, so an exception in it has no matching slot. |
 | `ORPHAN_OVERRIDE` | A customised occurrence is anchored to a date the rule never generates, so it has no position to carry. |
+| `UNRESOLVED_TIME_ZONE` | The `TZID` is not one the browser can resolve, so every instant would be a guess. |
+| `SERIES_TOO_LARGE` | The series exceeds the modelling limit, so it cannot be checked exhaustively. |
+| `INVALID_TIME_OF_DAY` | The requested start time is not readable as `HH:MM`. |
 | `END_DATE_DROPS_MEETINGS` | Holding the old end date would quietly cost a meeting. |
 | `NOTHING_AFTER_DATE` / `NOTHING_BEFORE_DATE` | There is no split to make. |
 
@@ -139,11 +145,11 @@ Both themes currently report zero contrast failures, no touch target under 24px,
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
-Twenty-three tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+Thirty-five tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
 
 ```bash
 npm install
-npm test           # 23 unit and integration tests
+npm test           # 35 unit and integration tests
 npm run test:webmcp   # 34 checks against real Chrome WebMCP (macOS Chrome 149+)
 npm run dev
 ```
@@ -160,9 +166,13 @@ To enable the browser API yourself: Chrome 149 or later, `chrome://flags/#enable
 
 ## Scope
 
-Supported: `FREQ=WEEKLY` (plus `DAILY`/`MONTHLY`/`YEARLY` expansion), `INTERVAL`, `BYDAY`, `COUNT`, `UNTIL`, `WKST`, `TZID` with DST-correct wall-clock arithmetic, `EXDATE`, `RDATE`, detached `RECURRENCE-ID`, `VALARM`, `ATTENDEE`, `X-` properties, and lossless retention of every property SeriesSafe does not itself understand.
+The operating surface is deliberately narrow, and everything outside it is refused rather than approximated.
 
-Deliberately refused: `RANGE=THISANDFUTURE`, multiple `RRULE`s, and positional `BY*` parts. Live OAuth write-back to Google or Microsoft is out of scope; SeriesSafe works on `.ics` import and export, which is the interchange format both providers document.
+**Operated on:** `FREQ=WEEKLY` with `INTERVAL`, `BYDAY`, `COUNT`, `UNTIL` and `WKST`; UTC, floating and `TZID` times with DST-correct wall-clock arithmetic including gap and fold; all-day (`VALUE=DATE`) series; `EXDATE`, `RDATE`, detached `RECURRENCE-ID`, `STATUS:CANCELLED` overrides, `VALARM`, `ATTENDEE` with its parameters, `X-` properties, and lossless retention of every property SeriesSafe does not itself understand.
+
+**Refused:** `RANGE=THISANDFUTURE`; multiple `RRULE`s; positional parts (`BYSETPOS`, `BYWEEKNO`, `BYYEARDAY`, `BYMONTH`, `BYHOUR`…); and any rule part this engine does not expand *exactly* — notably `BYDAY` on a non-weekly frequency. `FREQ=MONTHLY;BYDAY=1MO` means the first Monday of the month, and an engine that renders it as the first of the month is not entitled to edit it, so it says so instead.
+
+Live OAuth write-back to Google or Microsoft is out of scope; SeriesSafe works on `.ics` import and export, which is the interchange format both providers document.
 
 ## Licence
 

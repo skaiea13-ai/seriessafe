@@ -173,7 +173,7 @@ test('multiple series in one file are isolated from each other', () => {
   assert.ok(report!.pass);
   const blast = report!.checks.find((c) => c.id === 'blast-radius')!;
   assert.ok(blast.pass);
-  assert.match(blast.evidence, /1 unrelated event\(s\) untouched/);
+  assert.match(blast.evidence, /1 unrelated component\(s\) untouched/);
 });
 
 test('a malformed calendar is rejected without throwing', () => {

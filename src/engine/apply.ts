@@ -1,6 +1,5 @@
 import {
   type Component,
-  type Param,
   getProp,
   getProps,
   getParam,
@@ -9,12 +8,8 @@ import {
 } from '../ics/types.ts';
 import { formatDateTime } from '../ics/parse.ts';
 import { parseRRule, formatRRule } from './rrule.ts';
-import type { SeriesGraph } from './series.ts';
+import { type SeriesGraph, formatLike, dtParams } from './series.ts';
 import type { SplitPlan } from './split.ts';
-
-function tzParams(tzid?: string): Param[] {
-  return tzid ? [{ name: 'TZID', values: [tzid] }] : [];
-}
 
 function bumpSequence(c: Component): void {
   const seq = getProp(c, 'SEQUENCE');
@@ -40,8 +35,8 @@ function dateListProp(
   const values = instants
     .slice()
     .sort((a, b) => a - b)
-    .map((ms) => formatDateTime(ms, { tzid: graph.tzid, isDate: graph.isDate }));
-  return { name, params: tzParams(graph.tzid), value: values.join(',') };
+    .map((ms) => formatLike(graph, ms));
+  return { name, params: dtParams(graph), value: values.join(',') };
 }
 
 export interface ApplyResult {
@@ -70,7 +65,7 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
     const dt = rid.value;
     // Reuse the graph's override map by matching formatted values.
     for (const [ms] of graph.overrides) {
-      if (formatDateTime(ms, { tzid: tz, isDate: graph.isDate }) === dt) return ms;
+      if (formatDateTime(ms, { tzid: tz, isDate: graph.isDate, isUtc: graph.isUtc && !tz }) === dt) return ms;
     }
     return null;
   };
@@ -110,18 +105,13 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
 
   const newDtstart = getProp(newMaster, 'DTSTART');
   if (newDtstart) {
-    newDtstart.value = formatDateTime(plan.newDtstartMs, { tzid: graph.tzid, isDate: graph.isDate });
-    newDtstart.params = graph.isDate
-      ? [{ name: 'VALUE', values: ['DATE'] }]
-      : tzParams(graph.tzid);
+    newDtstart.value = formatLike(graph, plan.newDtstartMs);
+    newDtstart.params = dtParams(graph);
   }
   const newDtend = getProp(newMaster, 'DTEND');
   if (newDtend) {
-    newDtend.value = formatDateTime(plan.newDtstartMs + graph.durationMs, {
-      tzid: graph.tzid,
-      isDate: graph.isDate,
-    });
-    newDtend.params = graph.isDate ? [{ name: 'VALUE', values: ['DATE'] }] : tzParams(graph.tzid);
+    newDtend.value = formatLike(graph, plan.newDtstartMs + graph.durationMs);
+    newDtend.params = dtParams(graph);
   }
   getProps(newMaster, 'RRULE')[0].value = plan.newRuleText;
 
@@ -168,8 +158,8 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
     if (uidProp) uidProp.value = plan.newUid;
     const ridProp = getProp(moved, 'RECURRENCE-ID');
     if (ridProp) {
-      ridProp.value = formatDateTime(remap.newSlotMs, { tzid: graph.tzid, isDate: graph.isDate });
-      ridProp.params = graph.isDate ? [{ name: 'VALUE', values: ['DATE'] }] : tzParams(graph.tzid);
+      ridProp.value = formatLike(graph, remap.newSlotMs);
+      ridProp.params = dtParams(graph);
     }
     moved.props.push({
       name: 'X-SERIESSAFE-REANCHORED-FROM',
@@ -216,6 +206,11 @@ export function applyNaive(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   const pastEx = graph.exdates.filter((ms) => ms < firstFuture);
   const exProp = dateListProp('EXDATE', pastEx, graph);
   if (exProp) oldMaster.props.push(exProp);
+  // Dates added before the split are part of the truncated series, so a
+  // conventional edit keeps them; only the future ones are lost with it.
+  const pastRd = graph.rdates.filter((ms) => ms < firstFuture);
+  const rdKept = dateListProp('RDATE', pastRd, graph);
+  if (rdKept) oldMaster.props.push(rdKept);
 
   // The replacement series: pattern only. Future exceptions are not carried.
   const newMaster = cloneComponent(oldMaster);
@@ -225,16 +220,13 @@ export function applyNaive(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   if (uidProp) uidProp.value = `${graph.uid}-naive-${plan.newDtstartMs}`;
   const nd = getProp(newMaster, 'DTSTART');
   if (nd) {
-    nd.value = formatDateTime(plan.newDtstartMs, { tzid: graph.tzid, isDate: graph.isDate });
-    nd.params = graph.isDate ? [{ name: 'VALUE', values: ['DATE'] }] : tzParams(graph.tzid);
+    nd.value = formatLike(graph, plan.newDtstartMs);
+    nd.params = dtParams(graph);
   }
   const ne = getProp(newMaster, 'DTEND');
   if (ne) {
-    ne.value = formatDateTime(plan.newDtstartMs + graph.durationMs, {
-      tzid: graph.tzid,
-      isDate: graph.isDate,
-    });
-    ne.params = graph.isDate ? [{ name: 'VALUE', values: ['DATE'] }] : tzParams(graph.tzid);
+    ne.value = formatLike(graph, plan.newDtstartMs + graph.durationMs);
+    ne.params = dtParams(graph);
   }
   getProps(newMaster, 'RRULE')[0].value = plan.newRuleText;
 
@@ -245,7 +237,7 @@ export function applyNaive(cal: Component, graph: SeriesGraph, plan: SplitPlan):
     const rid = getProp(c, 'RECURRENCE-ID')!;
     const tz = getParam(rid, 'TZID') ?? graph.tzid;
     for (const [ms] of graph.overrides) {
-      if (formatDateTime(ms, { tzid: tz, isDate: graph.isDate }) === rid.value) {
+      if (formatDateTime(ms, { tzid: tz, isDate: graph.isDate, isUtc: graph.isUtc && !tz }) === rid.value) {
         return ms < firstFuture;
       }
     }

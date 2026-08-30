@@ -152,8 +152,19 @@ export function parseDateTime(raw: string, tzid?: string): IcsDateTime | null {
 /**
  * Convert a wall-clock time in `tzid` to UTC milliseconds.
  *
- * Uses Intl to read the zone's offset at the candidate instant, then corrects
- * once. Two passes settle DST boundaries for every real-world zone.
+ * Two candidate instants are derived from the zone's offset before and after
+ * the wall time, then checked by converting back. Which one is right depends
+ * on the kind of boundary:
+ *
+ *   - normal: exactly one candidate reproduces the wall time.
+ *   - fold (clocks go back, the time happens twice): both reproduce it, and
+ *     the earlier one is taken, matching the first occurrence.
+ *   - gap (clocks go forward, the time never happens): neither reproduces it,
+ *     and the offset in force *before* the transition is used, so 02:30 on a
+ *     spring-forward day resolves to 03:30 rather than back to 01:30.
+ *
+ * A single fixed-point pass returned the post-transition offset for a gap,
+ * silently moving such an event an hour earlier.
  */
 export function zonedToUtc(
   year: number,
@@ -165,14 +176,17 @@ export function zonedToUtc(
   tzid: string,
 ): number {
   const naive = Date.UTC(year, month, day, hour, min, sec);
-  let guess = naive;
-  for (let i = 0; i < 2; i++) {
-    const offset = tzOffsetMs(guess, tzid);
-    const next = naive - offset;
-    if (next === guess) break;
-    guess = next;
-  }
-  return guess;
+  const t1 = naive - tzOffsetMs(naive, tzid);
+  const t2 = naive - tzOffsetMs(t1, tzid);
+
+  const roundTrips = (t: number) => t + tzOffsetMs(t, tzid) === naive;
+  const ok1 = roundTrips(t1);
+  const ok2 = roundTrips(t2);
+
+  if (ok1 && ok2) return Math.min(t1, t2);   // fold: take the first occurrence
+  if (ok1) return t1;
+  if (ok2) return t2;
+  return Math.max(t1, t2);                   // gap: keep the pre-transition offset
 }
 
 const dtfCache = new Map<string, Intl.DateTimeFormat>();

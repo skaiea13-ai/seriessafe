@@ -1,4 +1,4 @@
-import { type Component, getProp, getParam } from '../ics/types.ts';
+import { type Component, type Prop, getProp, getParam } from '../ics/types.ts';
 import { parseIcs, formatDateTime } from '../ics/parse.ts';
 import { serializeIcs } from '../ics/serialize.ts';
 import { buildSeriesGraph, type SeriesGraph } from './series.ts';
@@ -20,6 +20,17 @@ export interface ValidationReport {
   checkedAt: number;
 }
 
+/** Two properties match only if their parameters match as well. */
+function samePropExactly(a: Prop, b: Prop): boolean {
+  if (a.name !== b.name || a.value !== b.value) return false;
+  const key = (p: Prop) =>
+    p.params
+      .map((x) => `${x.name}=${[...x.values].sort().join(',')}`)
+      .sort()
+      .join(';');
+  return key(a) === key(b);
+}
+
 interface Rendered {
   slotMs: number;
   startMs: number;
@@ -33,8 +44,8 @@ interface Rendered {
  * from the serialized bytes rather than from in-memory objects, so a bug in the
  * writer cannot pass unnoticed.
  */
-function render(cal: Component, uid: string): Rendered[] {
-  const g = buildSeriesGraph(cal, uid);
+function render(cal: Component, uid: string, horizonMs?: number): Rendered[] {
+  const g = buildSeriesGraph(cal, uid, horizonMs);
   if (!g) return [];
   return g.occurrences.map((o) => ({
     slotMs: o.slotMs,
@@ -44,13 +55,27 @@ function render(cal: Component, uid: string): Rendered[] {
   }));
 }
 
+/**
+ * A canonical fingerprint covering everything a component carries: property
+ * parameters and nested components included.
+ *
+ * Comparing only `NAME=value` and an alarm *count* left real changes invisible.
+ * A reminder retimed from -PT30M to -PT5M, or an attendee stripped of their
+ * CN, ROLE and PARTSTAT, both passed while the evidence line claimed the
+ * properties were verified byte-for-byte.
+ */
 function propFingerprint(c: Component): string {
+  const params = (p: { params: Array<{ name: string; values: string[] }> }) =>
+    p.params
+      .map((x) => `${x.name}=${[...x.values].sort().join(',')}`)
+      .sort()
+      .join(';');
   const props = c.props
-    .map((p) => `${p.name}=${p.value}`)
+    .map((p) => `${p.name}[${params(p)}]=${p.value}`)
     .sort()
     .join('|');
-  const alarms = c.children.filter((x) => x.name === 'VALARM').length;
-  return `${props}#alarms=${alarms}`;
+  const kids = c.children.map(propFingerprint).sort().join('&');
+  return `${c.name}{${props}}(${kids})`;
 }
 
 /**
@@ -72,9 +97,20 @@ export function validateStage(
   const effective = plan.futureOccurrences[0]?.slotMs ?? Infinity;
   const tz = before.tzid;
 
-  const oldAfter = render(reparsed, before.uid);
-  const newAfter = render(reparsed, plan.newUid);
-  const origBefore = render(original, before.uid);
+  /*
+   * Every rendering is bounded by the same instant. Comparing counts across
+   * differently-sized windows is how a truncated model can look balanced: the
+   * old and new series start on different dates, so left to themselves they
+   * would each pick their own horizon.
+   */
+  const window = Math.max(
+    before.modelledUntilMs,
+    plan.newEndsAtMs ?? 0,
+    plan.oldEndsAtMs ?? 0,
+  );
+  const oldAfter = render(reparsed, before.uid, window);
+  const newAfter = render(reparsed, plan.newUid, window);
+  const origBefore = render(original, before.uid, window);
 
   const fmt = (ms: number) => formatHuman(ms, tz);
 
@@ -235,14 +271,15 @@ export function validateStage(
       if (!src || !dst) continue;
       for (const p of src.props) {
         if (['UID', 'RECURRENCE-ID', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'].includes(p.name)) continue;
-        const match = dst.props.find((q) => q.name === p.name && q.value === p.value);
-        if (!match) problems.push(`${p.name} lost from the ${fmt(r.oldSlotMs)} override`);
+        const match = dst.props.find((q) => samePropExactly(p, q));
+        if (!match) problems.push(`${p.name} lost or altered on the ${fmt(r.oldSlotMs)} occurrence`);
         else carried++;
       }
-      const srcAlarms = src.children.filter((c) => c.name === 'VALARM').length;
-      const dstAlarms = dst.children.filter((c) => c.name === 'VALARM').length;
-      if (srcAlarms !== dstAlarms) problems.push(`${srcAlarms - dstAlarms} alarm(s) lost from ${fmt(r.oldSlotMs)}`);
-      else carried += srcAlarms;
+      const srcAlarms = src.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
+      const dstAlarms = dst.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
+      if (srcAlarms.join('|') !== dstAlarms.join('|')) {
+        problems.push(`a reminder on ${fmt(r.oldSlotMs)} was lost or changed`);
+      } else carried += srcAlarms.length;
     }
     // The new master must keep the roster, alarms and private extensions.
     const newMaster = reparsed.children.find(
@@ -251,14 +288,14 @@ export function validateStage(
     if (newMaster) {
       for (const p of before.master.props) {
         if (['UID', 'DTSTART', 'DTEND', 'RRULE', 'EXDATE', 'RDATE', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'].includes(p.name)) continue;
-        const match = newMaster.props.find((q) => q.name === p.name && q.value === p.value);
-        if (!match) problems.push(`${p.name} lost from the new series`);
+        const match = newMaster.props.find((q) => samePropExactly(p, q));
+        if (!match) problems.push(`${p.name} lost or altered on the new series`);
         else carried++;
       }
-      const a = before.master.children.filter((c) => c.name === 'VALARM').length;
-      const b = newMaster.children.filter((c) => c.name === 'VALARM').length;
-      if (a !== b) problems.push(`${a - b} alarm(s) lost from the new series`);
-      else carried += a;
+      const a = before.master.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
+      const b = newMaster.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
+      if (a.join('|') !== b.join('|')) problems.push('a reminder on the new series was lost or changed');
+      else carried += a.length;
     } else {
       problems.push('the new series master is missing');
     }
@@ -297,22 +334,26 @@ export function validateStage(
     const futureCount = newAfter.filter((o) => !o.cancelled).length;
     const expected = origBefore.filter((o) => !o.cancelled).length;
     const got = pastCount + futureCount;
+    const scope = before.unbounded
+      ? ` (counted to ${fmt(window)}, since the series has no end)`
+      : '';
     checks.push({
       id: 'count-reconciles',
       title: 'The total number of real meetings is unchanged',
       pass: got === expected,
-      evidence: `${pastCount} kept + ${futureCount} moved = ${got}; originally ${expected}.`,
+      evidence: `${pastCount} kept + ${futureCount} moved = ${got}; originally ${expected}${scope}.`,
     });
   }
 
   // 8. Nothing else in the file was touched.
   {
-    const otherBefore = original.children.filter(
-      (c) => c.name === 'VEVENT' && (getProp(c, 'UID')?.value ?? '') !== before.uid,
-    );
-    const otherAfter = reparsed.children.filter(
-      (c) => c.name === 'VEVENT' && ![before.uid, plan.newUid].includes(getProp(c, 'UID')?.value ?? ''),
-    );
+    // Everything that is not part of this series: other events *and* the
+    // calendar's other components, such as the VTIMEZONE definitions the
+    // times depend on.
+    const untouched = (c: Component, uids: string[]) =>
+      c.name !== 'VEVENT' || !uids.includes(getProp(c, 'UID')?.value ?? '');
+    const otherBefore = original.children.filter((c) => untouched(c, [before.uid]));
+    const otherAfter = reparsed.children.filter((c) => untouched(c, [before.uid, plan.newUid]));
     const same =
       otherBefore.length === otherAfter.length &&
       otherBefore.every((c, i) => propFingerprint(c) === propFingerprint(otherAfter[i]));
@@ -321,8 +362,8 @@ export function validateStage(
       title: 'No other event in the calendar was modified',
       pass: same,
       evidence: same
-        ? `${otherBefore.length} unrelated event(s) untouched.`
-        : `Unrelated events changed: ${otherBefore.length} before vs ${otherAfter.length} after.`,
+        ? `${otherBefore.length} unrelated component(s) untouched, parameters and sub-components included.`
+        : `Unrelated components changed: ${otherBefore.length} before vs ${otherAfter.length} after.`,
     });
   }
 

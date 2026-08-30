@@ -1,12 +1,13 @@
 import {
   type Component,
+  type Param,
   type Prop,
   getProp,
   getProps,
   getParam,
 
 } from '../ics/types.ts';
-import { parseDateTime, unescapeText, isKnownTimeZone } from '../ics/parse.ts';
+import { parseDateTime, formatDateTime, unescapeText, isKnownTimeZone } from '../ics/parse.ts';
 import { parseRRule, expandRRule, type RRule } from './rrule.ts';
 
 /** How an occurrence differs from the bare recurrence pattern. */
@@ -34,6 +35,8 @@ export interface SeriesGraph {
   dtstartMs: number;
   tzid?: string;
   isDate: boolean;
+  /** True when DTSTART was written as a UTC instant (a trailing "Z"). */
+  isUtc: boolean;
   durationMs: number;
   summary: string;
   /** Cancelled slot instants taken from EXDATE. */
@@ -43,6 +46,14 @@ export interface SeriesGraph {
   /** Detached overrides keyed by their RECURRENCE-ID instant. */
   overrides: Map<number, Component>;
   occurrences: Occurrence[];
+  /** Set when a TZID could not be resolved, so every instant is a guess. */
+  timeZoneUnresolved?: string;
+  /** True when the rule has neither COUNT nor UNTIL, so it never ends. */
+  unbounded: boolean;
+  /** True when expansion hit its safety limit, so the model is incomplete. */
+  truncated: boolean;
+  /** The instant expansion stopped at. Comparisons must share this bound. */
+  modelledUntilMs: number;
   /** Non-fatal observations surfaced in the UI. */
   warnings: string[];
 }
@@ -104,8 +115,12 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   const dtstartProp = getProp(master, 'DTSTART');
   if (!dtstartProp) return null;
   const tzid = getParam(dtstartProp, 'TZID');
+  let timeZoneUnresolved: string | undefined;
   if (tzid && !isKnownTimeZone(tzid)) {
-    warnings.push(`TZID "${tzid}" is not recognised by this browser; times are treated as UTC.`);
+    timeZoneUnresolved = tzid;
+    warnings.push(
+      `TZID "${tzid}" is not one this browser can resolve, so every time in this series would be a guess.`,
+    );
   }
   const dtstart = parseDateTime(dtstartProp.value, tzid);
   if (!dtstart) return null;
@@ -146,19 +161,48 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   }
 
   // Materialize the occurrence list.
-  const horizon = horizonMs ?? Date.UTC(dtstart.ms > 0 ? new Date(dtstart.ms).getUTCFullYear() + 3 : 2030, 0, 1);
-  const slots = expandRRule(dtstart.ms, rule, tzid, { maxMs: horizon, limit: 2000 });
-  for (const r of rdates) if (!slots.includes(r)) slots.push(r);
+  // RRULE slots and RDATE-only dates are tracked separately: a date that the
+  // rule already produces is not an "extra", and treating it as one removes it
+  // from the pattern and shifts every later exception by a position.
+  //
+  // A bounded rule is expanded to its own end. Only a rule that never ends
+  // gets a window, and it is anchored past the furthest exception so nothing
+  // addressable is left outside the model. An earlier fixed three-year horizon
+  // silently dropped far-future occurrences and rewrote long series as short
+  // finite ones, with every invariant still reporting success.
+  const unbounded = rule.count === undefined && rule.until === undefined;
+  const furthestException = Math.max(
+    dtstart.ms,
+    ...exdates, ...rdates, ...[...overrides.keys()],
+  );
+  const LIMIT = 20000;
+  const horizon =
+    horizonMs ??
+    (unbounded ? furthestException + 2 * 365 * 86400_000 : undefined);
+  const ruleSlots = expandRRule(dtstart.ms, rule, tzid, { maxMs: horizon, limit: LIMIT });
+  const truncated = ruleSlots.length >= LIMIT;
+  const ruleSet = new Set(ruleSlots);
+  const slots = [...ruleSlots];
+  for (const r of rdates) if (!ruleSet.has(r)) slots.push(r);
   slots.sort((a, b) => a - b);
 
   const exSet = new Set(exdates);
-  const rdSet = new Set(rdates);
+  // Only an RDATE the rule does not already generate counts as an added date.
+  const rdSet = new Set(rdates.filter((r) => !ruleSet.has(r)));
   const occurrences: Occurrence[] = slots.map((slotMs, index) => {
     const ov = overrides.get(slotMs);
     if (exSet.has(slotMs)) {
       return { index, slotMs, kind: 'cancelled', startMs: slotMs, note: 'Cancelled (EXDATE)' };
     }
     if (ov) {
+      // A detached override carrying STATUS:CANCELLED is not a meeting that
+      // happens elsewhere; it is that occurrence being called off.
+      if (textOf(ov, 'STATUS').toUpperCase() === 'CANCELLED') {
+        return {
+          index, slotMs, kind: 'cancelled', startMs: slotMs,
+          override: ov, note: 'Cancelled (STATUS:CANCELLED)',
+        };
+      }
       const ovStartProp = getProp(ov, 'DTSTART');
       const ovStart = ovStartProp
         ? parseDateTime(ovStartProp.value, getParam(ovStartProp, 'TZID') ?? tzid)
@@ -199,12 +243,17 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
     dtstartMs: dtstart.ms,
     tzid,
     isDate: dtstart.isDate,
+    isUtc: dtstart.isUtc,
     durationMs,
     summary: textOf(master, 'SUMMARY') || '(untitled)',
     exdates,
     rdates,
     overrides,
     occurrences,
+    timeZoneUnresolved,
+    unbounded,
+    truncated,
+    modelledUntilMs: horizon ?? (ruleSlots.length ? ruleSlots[ruleSlots.length - 1] : dtstart.ms),
     warnings,
   };
 }
@@ -245,4 +294,34 @@ export function listRecurringUids(cal: Component): string[] {
     if (uid) uids.add(uid);
   }
   return [...uids];
+}
+
+/**
+ * Format an instant using the same value type as this series' DTSTART.
+ *
+ * RFC 5545 gives a UTC instant, a floating local time and a date three
+ * different meanings. Re-emitting a UTC `DTSTART` without its `Z` turns it
+ * into floating time, which silently moves the event for every viewer outside
+ * the writer's zone.
+ */
+export function formatLike(g: SeriesGraph, ms: number): string {
+  return formatDateTime(ms, { isDate: g.isDate, isUtc: g.isUtc, tzid: g.tzid });
+}
+
+/** The parameters a date property of this series' type must carry. */
+export function dtParams(g: SeriesGraph): Param[] {
+  if (g.isDate) return [{ name: 'VALUE', values: ['DATE'] }];
+  if (g.isUtc) return [];
+  return g.tzid ? [{ name: 'TZID', values: [g.tzid] }] : [];
+}
+
+/**
+ * Build an UNTIL value of the type RFC 5545 §3.3.10 requires: a DATE when
+ * DTSTART is a DATE, floating local time when DTSTART floats, and UTC when
+ * DTSTART is UTC or carries a TZID.
+ */
+export function formatUntil(g: SeriesGraph, ms: number): string {
+  if (g.isDate) return formatDateTime(ms, { isDate: true });
+  if (!g.isUtc && !g.tzid) return formatDateTime(ms, { isDate: false });
+  return formatDateTime(ms, { isUtc: true });
 }
