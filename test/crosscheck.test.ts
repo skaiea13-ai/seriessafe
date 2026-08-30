@@ -644,3 +644,29 @@ test('the effective date is held to the same standard as any other date', () => 
   assert.equal(new Date(early!).getUTCFullYear(), 96, 'and is not mapped into the 1900s');
   assert.ok(startOfDayInZone('2026-09-01', 'Asia/Seoul'), 'ordinary dates still work');
 });
+
+test('a date list stays a set, and DURATION-only events are not refused', () => {
+  // Collecting every entry at an instant is right when their parameters
+  // differ; repeating an identical value inside one property is not.
+  const twice = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                      'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60',
+                      'EXDATE:20260915T090000Z', 'EXDATE:20260915T090000Z'].join('\r\n'));
+  const a = attempt(twice, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(a.plan.ok, JSON.stringify(a.plan.refusals));
+  const exLines = a.out.split('\r\n').filter((l) => l.startsWith('EXDATE'));
+  assert.equal(exLines.length, 1);
+  assert.equal(exLines[0].split(':')[1].split(',').length, 1, 'the value appears once');
+
+  // Refusing unreadable dates must not refuse events that simply have none:
+  // DURATION is a legal alternative to DTEND, on a master or an override.
+  const dur = wrap(
+    ['DTSTART:20260303T090000Z', 'DURATION:PT1H', 'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60'].join('\r\n'),
+    ['BEGIN:VEVENT', `UID:${UID}`, 'DTSTAMP:20260901T000000Z',
+     'DTSTART:20260916T090000Z', 'DURATION:PT90M', 'RECURRENCE-ID:20260915T090000Z',
+     'SUMMARY:Moved', 'END:VEVENT'].join('\r\n'),
+  );
+  const g = buildSeriesGraph(parseIcs(dur), UID)!;
+  assert.deepEqual(g.unreadableDates, [], 'nothing is reported as unreadable');
+  assert.equal(g.durationMs, 3600_000, 'the master duration is read from DURATION');
+  assert.ok(attempt(dur, Date.UTC(2026, 8, 1), ['TH']).plan.ok);
+});

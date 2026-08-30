@@ -58,8 +58,10 @@ function dateListProps(
   return [...groups.values()].map((g) => ({
     name,
     params: dtParams(graph, g.params),
-    value: g.values
-      .slice()
+    // A date list is a set: repeating a value inside one property says nothing
+    // extra and some readers object to it. Values that differ only by their
+    // parameters are in different groups, so they are not affected.
+    value: [...new Set(g.values)]
       .sort((a, b) => a - b)
       .map((ms) => formatLike(graph, ms))
       .join(','),
