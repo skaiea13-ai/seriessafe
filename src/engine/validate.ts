@@ -318,9 +318,46 @@ export function validateStage(
     } else {
       problems.push('the new series master is missing');
     }
+    /*
+     * Date lists were never compared, so anything riding on an EXDATE or RDATE
+     * could vanish with every check green. For each original value, a value
+     * must exist in the output — at its re-anchored instant when it moved —
+     * carrying the same parameters.
+     */
+    const paramKey = (ps: Prop['params']) =>
+      JSON.stringify(ps.filter((p) => p.name !== 'VALUE' && p.name !== 'TZID').map((p) => [p.name, p.values]));
+    const outEntries = (name: string, uid: string) => {
+      const master = reparsed.children.find(
+        (c) => c.name === 'VEVENT' && (getProp(c, 'UID')?.value ?? '') === uid && !getProp(c, 'RECURRENCE-ID'),
+      );
+      const out: Array<{ value: string; key: string }> = [];
+      for (const p of master?.props.filter((x) => x.name === name) ?? []) {
+        for (const v of p.value.split(',')) out.push({ value: v, key: paramKey(p.params) });
+      }
+      return out;
+    };
+    for (const [name, entries] of [
+      ['EXDATE', before.exdateEntries],
+      ['RDATE', before.rdateEntries],
+    ] as const) {
+      const oldOut = outEntries(name, before.uid);
+      const newOut = outEntries(name, plan.newUid);
+      for (const e of entries) {
+        const moved = plan.remaps.find((r) => r.oldSlotMs === e.ms);
+        const target = moved ? newOut : oldOut;
+        const wantValue = formatLike(before, moved ? moved.newSlotMs : e.ms);
+        const want = paramKey(e.params);
+        if (!target.some((o) => o.value === wantValue && o.key === want)) {
+          problems.push(
+            `${name} for ${fmt(e.ms)} lost its entry or its parameters`,
+          );
+        } else carried++;
+      }
+    }
+
     checks.push({
       id: 'properties-carried',
-      title: 'Locations, attendees, reminders and private X- properties carried across',
+      title: 'Locations, attendees, reminders, date lists and private X- properties carried across',
       pass: problems.length === 0,
       evidence: problems.length === 0
         ? `${carried} properties and alarms verified byte-for-byte on the new series.`

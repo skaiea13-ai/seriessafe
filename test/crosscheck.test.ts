@@ -670,3 +670,52 @@ test('a date list stays a set, and DURATION-only events are not refused', () => 
   assert.equal(g.durationMs, 3600_000, 'the master duration is read from DURATION');
   assert.ok(attempt(dur, Date.UTC(2026, 8, 1), ['TH']).plan.ok);
 });
+
+/* ---- sixth review round -------------------------------------------- */
+
+test('parameter value order is preserved, not normalised away', () => {
+  // Sorting the values inside a parameter made X-P=a,b and X-P=b,a collide, so
+  // one of the two entries was written out for both. Order can carry meaning
+  // in a parameter this tool does not understand.
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60',
+                    'EXDATE;X-P=a,b:20260915T090000Z',
+                    'EXDATE;X-P=b,a:20260915T090000Z'].join('\r\n'));
+  const { plan, out, report } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(report!.pass, report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+  assert.match(out, /X-P=a,b:/, 'the first order survives');
+  assert.match(out, /X-P=b,a:/, 'and so does the second');
+});
+
+test('losing a date list entry is now caught, whatever caused it', () => {
+  // EXDATE and RDATE were never compared, so anything riding on them could
+  // vanish with every check green. This closes the class, not one instance.
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60',
+                    'EXDATE;X-WHY=holiday:20260922T090000Z',
+                    'RDATE:20261111T090000Z'].join('\r\n'));
+  const cal = parseIcs(ics);
+  const g = buildSeriesGraph(cal, UID)!;
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(validateStage(cal, applySplit(cal, g, plan).calendar, g, plan).pass, 'the honest result passes');
+
+  for (const [label, damage] of [
+    ['a dropped EXDATE', (c: any) => {
+      for (const e of c.children) e.props = e.props.filter((p: any) => p.name !== 'EXDATE');
+    }],
+    ['a stripped parameter', (c: any) => {
+      for (const e of c.children) for (const p of e.props) if (p.name === 'EXDATE') p.params = [];
+    }],
+    ['a dropped RDATE', (c: any) => {
+      for (const e of c.children) e.props = e.props.filter((p: any) => p.name !== 'RDATE');
+    }],
+  ] as const) {
+    const damaged = applySplit(cal, g, plan).calendar;
+    damage(damaged);
+    const report = validateStage(cal, damaged, g, plan);
+    assert.ok(!report.pass, `${label} must fail validation`);
+    assert.ok(report.checks.some((c) => c.id === 'properties-carried' && !c.pass), label);
+  }
+});

@@ -44,13 +44,14 @@ function dateListProps(
   for (const e of entries) {
     const extra = e.params.filter((p) => p.name !== 'VALUE' && p.name !== 'TZID');
     /*
-     * Serialized as nested structure rather than joined text. Flattening with
-     * separators made `X-P="a,b"` — one value containing a comma — collide
-     * with `X-P=a,b`, two values, so one of the two meanings was dropped.
+     * Serialized as nested structure rather than joined text, and left in the
+     * order it arrived. Flattening with separators made `X-P="a,b"` — one
+     * value containing a comma — collide with `X-P=a,b`, two values. Sorting
+     * the values then made `X-P=a,b` and `X-P=b,a` collide too: order can
+     * carry meaning in a parameter this tool does not understand, so it is not
+     * this tool's to normalise.
      */
-    const key = JSON.stringify(
-      extra.map((p) => [p.name, [...p.values].sort()]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
-    );
+    const key = JSON.stringify(extra.map((p) => [p.name, p.values]));
     const g = groups.get(key);
     if (g) g.values.push(e.ms);
     else groups.set(key, { params: e.params, values: [e.ms] });
