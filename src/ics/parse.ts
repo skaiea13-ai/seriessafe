@@ -1,4 +1,5 @@
 import type { Component, Prop, Param, IcsDateTime } from './types.ts';
+import { collectTimeZones, offsetFromTable, type ZoneTable } from './vtimezone.ts';
 
 /**
  * Unfold RFC 5545 content lines.
@@ -220,6 +221,28 @@ export function zonedToUtc(
   return Math.max(t1, t2);                   // gap: keep the pre-transition offset
 }
 
+/*
+ * Zone definitions the current calendar carries, consulted when Intl does not
+ * recognise a name. The app works on one calendar at a time, so a single
+ * registry is enough; it is replaced on every load rather than accumulating.
+ */
+let embeddedZones: ZoneTable = new Map();
+
+/** Adopt the VTIMEZONE definitions from a parsed calendar. */
+export function useEmbeddedTimeZones(cal: Component): void {
+  embeddedZones = collectTimeZones(cal);
+}
+
+/** True when a zone can be resolved, by Intl or by the file itself. */
+export function isKnownTimeZone(tzid: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tzid });
+    return true;
+  } catch {
+    return embeddedZones.has(tzid);
+  }
+}
+
 const dtfCache = new Map<string, Intl.DateTimeFormat>();
 
 /** Offset of `tzid` from UTC at instant `ms`, in milliseconds. */
@@ -238,9 +261,9 @@ export function tzOffsetMs(ms: number, tzid: string): number {
         second: '2-digit',
       });
     } catch {
-      // Unknown TZID: treat as UTC rather than throwing. Callers that need a
-      // guarantee check `isKnownTimeZone` and fail closed instead.
-      return 0;
+      // Not a name Intl knows. The calendar may define it itself; if not, the
+      // caller has already refused via `isKnownTimeZone`.
+      return offsetFromTable(embeddedZones, tzid, ms) ?? 0;
     }
     dtfCache.set(tzid, dtf);
   }
@@ -250,15 +273,6 @@ export function tzOffsetMs(ms: number, tzid: string): number {
   if (hour === 24) hour = 0; // some ICU versions emit 24 for midnight
   const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), hour, get('minute'), get('second'));
   return asUtc - ms;
-}
-
-export function isKnownTimeZone(tzid: string): boolean {
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tzid });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Format UTC ms back into an RFC 5545 literal in the given zone. */

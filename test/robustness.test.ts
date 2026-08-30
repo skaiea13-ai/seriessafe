@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ICAL from 'ical.js';
 
-import { parseIcs, startOfDayInZone } from '../src/ics/parse.ts';
+import { parseIcs, startOfDayInZone, useEmbeddedTimeZones, isKnownTimeZone, parseDateTime } from '../src/ics/parse.ts';
 import { serializeIcs } from '../src/ics/serialize.ts';
 import { buildSeriesGraph, listRecurringUids } from '../src/engine/series.ts';
 import { simulateSplit } from '../src/engine/split.ts';
@@ -256,4 +256,53 @@ test('the shapes real exporters emit are accepted, not refused', () => {
     assert.ok(report.pass,
       `${label} failed validation: ${report.checks.filter((x) => !x.pass).map((x) => x.evidence).join('; ')}`);
   }
+});
+
+test('a time zone the calendar defines itself is honoured', () => {
+  /*
+   * Exchange and Outlook write zone names of their own — "Pacific Standard
+   * Time", "GMT Standard Time" — and define them in an accompanying
+   * VTIMEZONE. Intl has never heard of those names, so an entirely valid file
+   * was being refused as unresolvable. The definition in the file is used.
+   */
+  const ics = [
+    'BEGIN:VCALENDAR', 'PRODID:-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN',
+    'VERSION:2.0', 'METHOD:PUBLISH',
+    'BEGIN:VTIMEZONE', 'TZID:Pacific Standard Time',
+    'BEGIN:STANDARD', 'DTSTART:16011104T020000', 'TZOFFSETFROM:-0700', 'TZOFFSETTO:-0800',
+    'RRULE:FREQ=YEARLY;BYDAY=1SU;BYMONTH=11', 'END:STANDARD',
+    'BEGIN:DAYLIGHT', 'DTSTART:16010311T020000', 'TZOFFSETFROM:-0800', 'TZOFFSETTO:-0700',
+    'RRULE:FREQ=YEARLY;BYDAY=2SU;BYMONTH=3', 'END:DAYLIGHT',
+    'END:VTIMEZONE',
+    'BEGIN:VEVENT', 'UID:pst@outlook.com', 'DTSTAMP:20260101T000000Z',
+    'DTSTART;TZID=Pacific Standard Time:20260303T090000',
+    'DTEND;TZID=Pacific Standard Time:20260303T100000',
+    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=52', 'SUMMARY:PST meeting', 'END:VEVENT', 'END:VCALENDAR',
+  ].join('\r\n') + '\r\n';
+
+  const c = parseIcs(ics);
+  useEmbeddedTimeZones(c);
+  assert.ok(isKnownTimeZone('Pacific Standard Time'), 'the file defines it, so it resolves');
+
+  // Standard time in March, daylight time in July — an hour apart, as Pacific.
+  assert.equal(
+    new Date(parseDateTime('20260303T090000', 'Pacific Standard Time')!.ms).toISOString(),
+    '2026-03-03T17:00:00.000Z',
+  );
+  assert.equal(
+    new Date(parseDateTime('20260707T090000', 'Pacific Standard Time')!.ms).toISOString(),
+    '2026-07-07T16:00:00.000Z',
+  );
+
+  const g = buildSeriesGraph(c, 'pst@outlook.com')!;
+  assert.equal(g.timeZoneUnresolved, undefined, 'and is not reported as unresolvable');
+  const plan = simulateSplit(g, {
+    effectiveFromMs: startOfDayInZone('2026-09-01', 'Pacific Standard Time')!,
+    byday: ['TH'],
+  });
+  assert.ok(plan.ok, `refused: ${plan.refusals.map((r) => r.code).join(', ')}`);
+  assert.ok(validateStage(c, applySplit(c, g, plan).calendar, g, plan).pass);
+
+  // A name neither Intl nor the file knows is still refused.
+  assert.equal(isKnownTimeZone('Mars/Olympus'), false);
 });

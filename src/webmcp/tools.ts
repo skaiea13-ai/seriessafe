@@ -1,4 +1,4 @@
-import { parseIcs, startOfDayInZone } from '../ics/parse.ts';
+import { parseIcs, startOfDayInZone, useEmbeddedTimeZones } from '../ics/parse.ts';
 import { serializeIcs } from '../ics/serialize.ts';
 import { cloneComponent } from '../ics/types.ts';
 import { buildSeriesGraph, listRecurringUids } from '../engine/series.ts';
@@ -109,6 +109,8 @@ export function resetAll(): void {
 
 export function doLoadCalendar(text: string, filename: string): string {
   const cal = parseIcs(text);
+  // Adopt any zone definitions the file carries before anything reads a date.
+  useEmbeddedTimeZones(cal);
   const uids = listRecurringUids(cal);
   state.calendar = cal;
   state.filename = filename;
