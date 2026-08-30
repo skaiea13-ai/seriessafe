@@ -2,6 +2,7 @@ import { type Component, type Prop, getProp } from '../ics/types.ts';
 import { parseIcs } from '../ics/parse.ts';
 import { serializeIcs } from '../ics/serialize.ts';
 import { buildSeriesGraph, formatLike, type SeriesGraph } from './series.ts';
+import { parseRRule } from './rrule.ts';
 import { formatHuman, type SplitPlan } from './split.ts';
 
 export interface Check {
@@ -374,13 +375,29 @@ export function validateStage(
       const n = Math.min(oldFuture.length, newAfter.length);
       const beforeN = oldFuture.slice(0, n).filter((o) => !o.cancelled).length;
       const afterN = newAfter.slice(0, n).filter((o) => !o.cancelled).length;
-      const stillOpen = !/COUNT=|UNTIL=/.test(plan.newRuleText);
+      /*
+       * Read from the file, not from the plan. Checking `plan.newRuleText`
+       * asked whether SeriesSafe *intended* to keep the series open, which is
+       * exactly the mistake this whole validation stage exists to avoid: a
+       * COUNT added to the written rule passed unnoticed.
+       */
+      const writtenMaster = reparsed.children.find(
+        (c) =>
+          c.name === 'VEVENT' &&
+          (getProp(c, 'UID')?.value ?? '') === plan.newUid &&
+          !getProp(c, 'RECURRENCE-ID'),
+      );
+      const writtenRule = writtenMaster
+        ? (writtenMaster.props.find((p) => p.name === 'RRULE')?.value ?? '')
+        : '';
+      const parsedRule = writtenRule ? parseRRule(writtenRule) : null;
+      const stillOpen = Boolean(parsedRule && parsedRule.count === undefined && parsedRule.until === undefined);
       checks.push({
         id: 'count-reconciles',
         title: 'The same meetings survive, and the series still has no end',
         pass: beforeN === afterN && stillOpen,
         evidence: !stillOpen
-          ? `The new rule acquired an end: ${plan.newRuleText}.`
+          ? `The series had no end, but the rule written out does: ${writtenRule || '(no rule found)'}.`
           : `${pastCount} kept before the change; over the next ${n} occurrences, ${beforeN} real meetings ` +
             `before and ${afterN} after.`,
       });

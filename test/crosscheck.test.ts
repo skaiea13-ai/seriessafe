@@ -381,3 +381,41 @@ test('a series of exactly the modelling limit is not called too large', () => {
   assert.equal(g.occurrences.length, 20000);
   assert.equal(g.truncated, false, 'exactly at the limit is complete, not overflowing');
 });
+
+test('an endless series is checked against the file, not against the plan', () => {
+  // The unbounded check asked whether SeriesSafe *intended* to keep the series
+  // open, reading plan.newRuleText. A COUNT added to the rule actually written
+  // out therefore passed — the exact mistake this validation stage exists to
+  // avoid, since it is supposed to read the serialized bytes.
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU'].join('\r\n'));
+  const cal = parseIcs(ics);
+  const g = buildSeriesGraph(cal, UID)!;
+  assert.equal(g.unbounded, true);
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(validateStage(cal, applySplit(cal, g, plan).calendar, g, plan).pass, 'the honest result passes');
+
+  const tampered = applySplit(cal, g, plan).calendar;
+  const master = tampered.children.find(
+    (c) => c.name === 'VEVENT' && getProp(c, 'UID')?.value === plan.newUid && !getProp(c, 'RECURRENCE-ID'),
+  )!;
+  const rrule = master.props.find((p) => p.name === 'RRULE')!;
+  rrule.value += ';COUNT=5';
+
+  const report = validateStage(cal, tampered, g, plan);
+  assert.ok(!report.pass, 'a standing meeting turned into five must fail');
+  const check = report.checks.find((c) => c.id === 'count-reconciles')!;
+  assert.match(check.evidence, /the rule written out does/);
+});
+
+test('an exception years beyond any window is still carried', () => {
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU', 'EXDATE:20310909T090000Z'].join('\r\n'));
+  const { plan, out, report } = attempt(ics, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(report!.pass, report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+  const carried = plan.remaps.find((r) => r.oldSlotMs === Date.UTC(2031, 8, 9, 9));
+  assert.ok(carried, 'the 2031 cancellation is carried');
+  assert.match(out, /20310911T090000Z/, 'onto the Thursday of its own week');
+});
