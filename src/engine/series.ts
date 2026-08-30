@@ -28,10 +28,20 @@ export interface Occurrence {
   note?: string;
 }
 
-/** One value from an EXDATE/RDATE list, with the parameters it travelled on. */
+/**
+ * One value from an EXDATE/RDATE list, with the parameters it travelled on and
+ * the form it was written in.
+ *
+ * RFC 5545 lets an RDATE be a DATE even when the series is timed, and lets it
+ * carry its own zone. Rewriting every value in the master's form turned an
+ * all-day extra session into a timed one.
+ */
 export interface DateEntry {
   ms: number;
   params: Param[];
+  isDate: boolean;
+  isUtc: boolean;
+  tzid?: string;
 }
 
 export interface SeriesGraph {
@@ -119,7 +129,7 @@ function collectDateList(props: Prop[]): {
     }
     for (const piece of p.value.split(',')) {
       const dt = parseDateTime(piece, tzid);
-      if (dt) entries.push({ ms: dt.ms, params: p.params });
+      if (dt) entries.push({ ms: dt.ms, params: p.params, isDate: dt.isDate, isUtc: dt.isUtc, tzid });
       else unreadable.push(`${p.name}:${piece}`);
     }
   }

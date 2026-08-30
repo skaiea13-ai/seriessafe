@@ -40,9 +40,11 @@ function dateListProps(
   graph: SeriesGraph,
 ): Component['props'] {
   if (!entries.length) return [];
-  const groups = new Map<string, { params: Param[]; values: number[] }>();
+  const groups = new Map<string, { params: Param[]; entries: DateEntry[] }>();
   for (const e of entries) {
-    const extra = e.params.filter((p) => p.name !== 'VALUE' && p.name !== 'TZID');
+    // The whole parameter set matters, VALUE and TZID included: values written
+    // in different forms belong on different properties.
+    const extra = e.params;
     /*
      * Serialized as nested structure rather than joined text, and left in the
      * order it arrived. Flattening with separators made `X-P="a,b"` — one
@@ -53,20 +55,23 @@ function dateListProps(
      */
     const key = JSON.stringify(extra.map((p) => [p.name, p.values]));
     const g = groups.get(key);
-    if (g) g.values.push(e.ms);
-    else groups.set(key, { params: e.params, values: [e.ms] });
+    if (g) g.entries.push(e);
+    else groups.set(key, { params: e.params, entries: [e] });
   }
-  return [...groups.values()].map((g) => ({
-    name,
-    params: dtParams(graph, g.params),
-    // A date list is a set: repeating a value inside one property says nothing
-    // extra and some readers object to it. Values that differ only by their
-    // parameters are in different groups, so they are not affected.
-    value: [...new Set(g.values)]
-      .sort((a, b) => a - b)
-      .map((ms) => formatLike(graph, ms))
-      .join(','),
-  }));
+  return [...groups.values()].map((g) => {
+    // Each value is written back in the form it arrived in, not the series'.
+    const seen = new Set<number>();
+    const kept = g.entries
+      .filter((e) => (seen.has(e.ms) ? false : (seen.add(e.ms), true)))
+      .sort((a, b) => a.ms - b.ms);
+    return {
+      name,
+      params: g.params.length ? g.params : dtParams(graph),
+      value: kept
+        .map((e) => formatDateTime(e.ms, { isDate: e.isDate, isUtc: e.isUtc, tzid: e.tzid }))
+        .join(','),
+    } as Component['props'][number];
+  });
 }
 
 export interface ApplyResult {
@@ -155,9 +160,10 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
    */
   const carryAll = (entries: DateEntry[], oldMs: number, newMs: number): DateEntry[] => {
     const matches = entries.filter((e) => e.ms === oldMs);
+    // The moved value keeps the form and parameters it arrived with.
     return matches.length
-      ? matches.map((e) => ({ ms: newMs, params: e.params }))
-      : [{ ms: newMs, params: [] }];
+      ? matches.map((e) => ({ ...e, ms: newMs }))
+      : [{ ms: newMs, params: dtParams(graph), isDate: graph.isDate, isUtc: graph.isUtc, tzid: graph.tzid }];
   };
   const newEx: DateEntry[] = plan.remaps
     .filter((r) => r.kind === 'cancellation')
@@ -216,18 +222,30 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
     })();
 
     if (!wasRelocated) {
+      /*
+       * Rewritten in the override's *own* form, not the series'. An all-day
+       * override of a timed series is legal, and rewriting it in the master's
+       * form turned it into a twenty-four-hour timed event.
+       */
       const startProp = getProp(moved, 'DTSTART');
+      const ownForm = (p: typeof startProp) => {
+        const tz = p ? getParam(p, 'TZID') : undefined;
+        const parsed = p ? parseDateTime(p.value, tz ?? graph.tzid) : null;
+        return {
+          isDate: parsed?.isDate ?? graph.isDate,
+          isUtc: parsed?.isUtc ?? (graph.isUtc && !tz),
+          tzid: tz ?? (parsed?.isUtc ? undefined : graph.tzid),
+        };
+      };
       if (startProp) {
-        startProp.value = formatLike(graph, remap.newSlotMs);
-        startProp.params = dtParams(graph, startProp.params);
+        startProp.value = formatDateTime(remap.newSlotMs, ownForm(startProp));
       }
       const endProp = getProp(moved, 'DTEND');
       if (endProp) {
         const tz = getParam(endProp, 'TZID') ?? graph.tzid;
         const end = parseDateTime(endProp.value, tz);
-        const own = end && getProp(moved, 'DTSTART') ? end.ms - rid : graph.durationMs;
-        endProp.value = formatLike(graph, remap.newSlotMs + own);
-        endProp.params = dtParams(graph, endProp.params);
+        const own = end ? end.ms - rid : graph.durationMs;
+        endProp.value = formatDateTime(remap.newSlotMs + own, ownForm(endProp));
       }
     }
 

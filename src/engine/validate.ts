@@ -476,8 +476,10 @@ export function validateStage(
      * must exist in the output — at its re-anchored instant when it moved —
      * carrying the same parameters.
      */
-    const paramKey = (ps: Prop['params']) =>
-      JSON.stringify(ps.filter((p) => p.name !== 'VALUE' && p.name !== 'TZID').map((p) => [p.name, p.values]));
+    // The full parameter set, VALUE and TZID included: an RDATE may legally be
+    // a DATE on a timed series, or carry a zone of its own, and the writer now
+    // preserves that rather than normalising it to the series' form.
+    const paramKey = (ps: Prop['params']) => JSON.stringify(ps.map((p) => [p.name, p.values]));
     /*
      * Each output value is resolved using the parameters *it* carries, so a
      * dropped or altered TZID is caught. Comparing the literal text alone let
@@ -514,8 +516,7 @@ export function validateStage(
         const target = moved ? newOut : oldOut;
         const wantMs = moved ? moved.newSlotMs : e.ms;
         const want = paramKey(e.params);
-        const wantShape = expectedForm(before);
-        if (!target.some((o) => o.ms === wantMs && o.key === want && o.form === wantShape && o.zoneOk)) {
+        if (!target.some((o) => o.ms === wantMs && o.key === want && o.zoneOk)) {
           problems.push(`${name} for ${fmt(e.ms)} lost its entry, its time zone, its value type or its parameters`);
         } else carried++;
       }

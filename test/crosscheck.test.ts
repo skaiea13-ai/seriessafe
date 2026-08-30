@@ -1014,3 +1014,79 @@ test('only weekly recurrence is operated on, and the rest are declined', () => {
       `${rule}: ${plan.refusals.map((r) => r.code).join(',')}`);
   }
 });
+
+/* ---- eleventh review round ----------------------------------------- */
+
+test('a date keeps the form it was written in, not the series\' form', () => {
+  /*
+   * RFC 5545 lets an RDATE be a DATE even when the series is timed, and lets
+   * it carry a zone of its own. Rewriting every value in the master's form
+   * turned an all-day extra session into a timed one, and an all-day override
+   * into a twenty-four-hour event.
+   */
+  const timedNY = ['DTSTART;TZID=America/New_York:20260303T090000',
+                   'DTEND;TZID=America/New_York:20260303T100000',
+                   'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60'];
+  const from = startOfDayInZone('2026-09-01', 'America/New_York')!;
+
+  const allDayExtra = wrap([...timedNY, 'RDATE;VALUE=DATE:20260417'].join('\r\n'));
+  const a = attempt(allDayExtra, from, ['TH']);
+  assert.ok(a.plan.ok, JSON.stringify(a.plan.refusals));
+  assert.ok(a.report!.pass, a.report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+  assert.match(a.out, /RDATE;VALUE=DATE:20260417/, 'the all-day extra stays all-day');
+
+  const allDayOverride = wrap(timedNY.join('\r\n'),
+    ['BEGIN:VEVENT', `UID:${UID}`, 'DTSTAMP:20260901T000000Z',
+     'RECURRENCE-ID;TZID=America/New_York:20260915T090000',
+     'DTSTART;VALUE=DATE:20260915', 'DTEND;VALUE=DATE:20260916',
+     'SUMMARY:All-day version', 'END:VEVENT'].join('\r\n'));
+  const b = attempt(allDayOverride, from, ['TH']);
+  assert.ok(b.plan.ok, JSON.stringify(b.plan.refusals));
+  assert.ok(b.report!.pass, b.report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+  const block = b.out.split('BEGIN:VEVENT').find((x) => /All-day version/.test(x))!;
+  assert.match(block, /DTSTART;VALUE=DATE:/, 'the all-day override stays all-day');
+  assert.doesNotMatch(block, /DTSTART;TZID/, 'and is not turned into a timed event');
+});
+
+test('an added date that the rule already produces is still carried', () => {
+  // Such a value is not an "extra" occurrence, so nothing was carrying it and
+  // it vanished from the output along with whatever was written on it.
+  const ics = wrap(['DTSTART;TZID=America/New_York:20260303T090000',
+                    'DTEND;TZID=America/New_York:20260303T100000',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60',
+                    'RDATE;X-SOURCE=vendor;TZID=America/New_York:20260915T090000'].join('\r\n'));
+  const { plan, out, report } = attempt(ics, startOfDayInZone('2026-09-01', 'America/New_York')!, ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(report!.pass, report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+  assert.match(out, /RDATE;X-SOURCE=vendor/, 'it survives with what was written on it');
+  assert.match(out, /20260917T090000/, 'moved to the slot it coincided with');
+});
+
+test('a rule that has already finished cannot be moved', () => {
+  // Only individually added dates remained, so the remaining count was zero
+  // and an illegal COUNT=0 was written — which ical.js reads as no limit
+  // at all, turning three meetings into an endless series.
+  const ics = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=3',
+                    'RDATE:20260402T090000Z'].join('\r\n'));
+  const { plan } = attempt(ics, Date.UTC(2026, 3, 1), ['TH']);
+  assert.ok(!plan.ok);
+  assert.ok(codes(plan).includes('NO_PATTERN_AFTER_DATE'), codes(plan).join(','));
+});
+
+test('a start time that does not exist is refused even when it is inherited', () => {
+  // The check only ran when a new time was requested, so a series that already
+  // met at 02:30 was moved onto a spring-forward Sunday and silently became a
+  // 03:30 series.
+  const ics = wrap(['DTSTART;TZID=America/New_York:20260106T023000',
+                    'DTEND;TZID=America/New_York:20260106T033000',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  const plan = simulateSplit(g, {
+    effectiveFromMs: startOfDayInZone('2026-03-08', 'America/New_York')!,
+    byday: ['SU'],
+  });
+  assert.ok(!plan.ok);
+  assert.ok(plan.refusals.some((r) => r.code === 'TIME_DOES_NOT_EXIST'),
+    plan.refusals.map((r) => r.code).join(','));
+});

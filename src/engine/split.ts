@@ -186,6 +186,19 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
     });
   }
 
+  const patternAfter = graph.occurrences.filter(
+    (o) => o.slotMs >= effectiveFromMs && o.kind !== 'extra',
+  );
+  if (future.length > 0 && patternAfter.length === 0) {
+    refusals.push({
+      code: 'NO_PATTERN_AFTER_DATE',
+      message:
+        'The repeating rule has already finished by that date; only individually added dates remain, ' +
+        'so there is no pattern to move.',
+      remedy: 'Edit those dates directly, or choose an earlier effective date.',
+    });
+  }
+
   if (future.length === 0) {
     refusals.push({
       code: 'NOTHING_AFTER_DATE',
@@ -333,14 +346,20 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
    * DTSTART — making every later Sunday 03:30 too. Refuse rather than move a
    * whole series by an hour.
    */
-  if (anchor !== null && params.timeOfDay && !graph.isDate) {
-    const asked = params.timeOfDay.trim();
-    const got = new Intl.DateTimeFormat('en-GB', {
-      timeZone: graph.tzid && graph.tzid.length ? graph.tzid : 'UTC',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(new Date(anchor));
+  if (anchor !== null && !graph.isDate && !graph.timeZoneUnresolved) {
+    /*
+     * Read through the same offset path the rest of the engine uses, so a zone
+     * the calendar defines for itself resolves here too — Intl would throw on
+     * `Pacific Standard Time`.
+     */
+    const wallTime = (ms: number) => {
+      const literal = formatDateTime(ms, { tzid: graph.tzid, isUtc: graph.isUtc && !graph.tzid });
+      const m = /T(\d{2})(\d{2})/.exec(literal);
+      return m ? `${m[1]}:${m[2]}` : '';
+    };
+    // The requested time, or the one the series already keeps.
+    const asked = params.timeOfDay?.trim() ?? wallTime(graph.dtstartMs);
+    const got = wallTime(anchor);
     if (got !== asked) {
       refusals.push({
         code: 'TIME_DOES_NOT_EXIST',
@@ -484,6 +503,32 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
         oldSlotMs: occ.slotMs,
         newSlotMs: occ.slotMs, // an explicit extra date keeps its own date
         label: labelOf(occ, graph),
+        carried: ['RDATE'],
+      });
+    }
+  }
+
+  /*
+   * An RDATE naming a date the rule already produces is redundant as a date,
+   * but it still carries whatever was written on it. Such a value is not an
+   * `extra` occurrence, so nothing was carrying it and it vanished from the
+   * output entirely. It moves with the slot it coincides with.
+   */
+  for (const entry of graph.rdateEntries) {
+    if (entry.ms < effectiveFromMs) continue;
+    if (remaps.some((r) => r.oldSlotMs === entry.ms && r.kind === 'extra')) continue;
+    const week = weekKey(entry.ms, graph.tzid, graph.rule.wkst);
+    const oldRow = oldWeeks.get(week) ?? [];
+    const newRow = newWeeks.get(week) ?? [];
+    const at = oldRow.indexOf(entry.ms);
+    const target = at >= 0 ? newRow[at] : undefined;
+    if (target !== undefined) {
+      remaps.push({
+        kind: 'extra',
+        ordinal: at,
+        oldSlotMs: entry.ms,
+        newSlotMs: target,
+        label: `Added date — ${formatHuman(entry.ms, graph.tzid)}`,
         carried: ['RDATE'],
       });
     }
