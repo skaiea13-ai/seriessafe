@@ -834,3 +834,100 @@ test('a date written in a different form is caught, even at the same instant', (
     assert.ok(!validateStage(cal, damaged, g, plan).pass, `${label} must fail validation`);
   }
 });
+
+/* ---- ninth review round: defects in SeriesSafe's own output --------- */
+
+test('an occurrence that only changed metadata moves with its slot', () => {
+  /*
+   * The guest lecture in the sample changed room and title but was never
+   * rescheduled, so its DTSTART still equals its RECURRENCE-ID. Preserving
+   * every override's own times unconditionally left it on the old Tuesday
+   * while its anchor moved to the new Thursday — a meeting on a day the series
+   * no longer runs, and every check passed.
+   *
+   * The make-up is the opposite case: it *was* deliberately moved to a
+   * Wednesday, and that date is the user's, not ours.
+   */
+  const src = readFileSync(new URL('../fixtures/korean-class.ics', import.meta.url), 'utf8');
+  const cal = parseIcs(src);
+  const uid = 'advanced-korean-tue@school.example.com';
+  const g = buildSeriesGraph(cal, uid)!;
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 7, 31, 15), byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  const out = serializeIcs(applySplit(cal, g, plan).calendar);
+
+  const guest = out.split('BEGIN:VEVENT').find((b) => /Guest Lecture/.test(b))!;
+  assert.match(guest, /DTSTART;TZID=Asia\/Seoul:20261022T190000/, 'the guest lecture moves to the Thursday');
+  assert.match(guest, /RECURRENCE-ID;TZID=Asia\/Seoul:20261022T190000/, 'anchored to the same Thursday');
+  assert.match(guest, /Room B-302/, 'and keeps the room it was moved for');
+
+  const makeup = out.split('BEGIN:VEVENT').find((b) => /MAKE-UP/.test(b))!;
+  assert.match(makeup, /DTSTART;TZID=Asia\/Seoul:20260916T190000/, 'the make-up keeps its own Wednesday');
+  assert.match(makeup, /RECURRENCE-ID;TZID=Asia\/Seoul:20260917T190000/, 'anchored to the matching Thursday');
+});
+
+test('keeping the end date of a counted series does not make it endless', () => {
+  // Clearing COUNT with no UNTIL to inherit turned a ten-week course into a
+  // meeting that never ends.
+  const counted = wrap(['DTSTART:20260305T090000Z', 'DTEND:20260305T100000Z',
+                        'RRULE:FREQ=WEEKLY;BYDAY=TH;COUNT=10'].join('\r\n'));
+  const cal = parseIcs(counted);
+  const g = buildSeriesGraph(cal, UID)!;
+
+  // Moving to an earlier weekday keeps every meeting and the same last date.
+  const ok = simulateSplit(g, {
+    effectiveFromMs: Date.UTC(2026, 2, 24), byday: ['TU'], endPolicy: 'keep-end-date',
+  });
+  assert.ok(ok.ok, JSON.stringify(ok.refusals));
+  assert.match(ok.newRuleText, /UNTIL=/, 'the count becomes an explicit end date');
+  assert.doesNotMatch(ok.newRuleText, /COUNT=/, 'and does not keep a stale count');
+  assert.ok(validateStage(cal, applySplit(cal, g, ok).calendar, g, ok).pass);
+
+  // Moving later would cost a meeting, and is refused rather than silently
+  // producing an endless series.
+  const bad = simulateSplit(g, {
+    effectiveFromMs: Date.UTC(2026, 2, 24), byday: ['FR'], endPolicy: 'keep-end-date',
+  });
+  assert.ok(!bad.ok);
+  assert.ok(codes(bad).includes('END_DATE_DROPS_MEETINGS'), codes(bad).join(','));
+});
+
+test('a series with nothing to re-anchor may change how often it meets', () => {
+  // The cadence rule protects exceptions, which are carried by week. With no
+  // exceptions after the effective date there is nothing at risk, and refusing
+  // an ordinary "make the standup twice weekly" was pure obstruction.
+  const plain = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                      'RRULE:FREQ=WEEKLY;BYDAY=TU'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(plain), UID)!;
+  assert.ok(simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TU', 'TH'] }).ok);
+  assert.ok(simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TU'], interval: 2 }).ok);
+
+  // With something to carry, the protection still applies.
+  const withException = wrap(['DTSTART:20260303T090000Z', 'DTEND:20260303T100000Z',
+                              'RRULE:FREQ=WEEKLY;BYDAY=TU', 'EXDATE:20260922T090000Z'].join('\r\n'));
+  const g2 = buildSeriesGraph(parseIcs(withException), UID)!;
+  const refused = simulateSplit(g2, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TU', 'TH'] });
+  assert.ok(!refused.ok);
+  assert.ok(codes(refused).includes('CADENCE_CHANGED'), codes(refused).join(','));
+});
+
+test('parameters riding on a rewritten date, and an anchor that gains a RANGE', () => {
+  const ics = wrap(['DTSTART;X-START-META=keep:20260303T090000Z',
+                    'DTEND;X-END-META=keep:20260303T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60'].join('\r\n'));
+  const cal = parseIcs(ics);
+  const g = buildSeriesGraph(cal, UID)!;
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 1), byday: ['TH'] });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(validateStage(cal, applySplit(cal, g, plan).calendar, g, plan).pass);
+
+  // Rewriting a date's value is not licence to drop what came with it.
+  const stripped = applySplit(cal, g, plan).calendar;
+  const m = stripped.children.find(
+    (c) => c.name === 'VEVENT' && getProp(c, 'UID')?.value === plan.newUid && !getProp(c, 'RECURRENCE-ID'),
+  )!;
+  for (const n of ['DTSTART', 'DTEND']) {
+    getProp(m, n)!.params = getProp(m, n)!.params.filter((p) => !p.name.startsWith('X-'));
+  }
+  assert.ok(!validateStage(cal, stripped, g, plan).pass, 'stripped date parameters must fail');
+});

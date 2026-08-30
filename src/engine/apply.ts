@@ -7,7 +7,7 @@ import {
   cloneComponent,
   removeProps,
 } from '../ics/types.ts';
-import { formatDateTime } from '../ics/parse.ts';
+import { formatDateTime, parseDateTime } from '../ics/parse.ts';
 import { parseRRule, formatRRule } from './rrule.ts';
 import { type SeriesGraph, type DateEntry, formatLike, dtParams } from './series.ts';
 import type { SplitPlan } from './split.ts';
@@ -192,9 +192,41 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
       kept.push(ev); // a past override: untouched
       continue;
     }
-    // A future override moves to the new series, keeping its own times and
-    // every property it carries.
+    /*
+     * A future override moves to the new series.
+     *
+     * Whether its *times* move depends on what kind of override it is. One
+     * that was deliberately relocated — a make-up already shifted to a
+     * Wednesday — keeps the date the user chose. One that only changed
+     * metadata, and whose DTSTART therefore still equals its RECURRENCE-ID,
+     * has no date of its own to keep: leaving it behind stranded the guest
+     * lecture on the old Tuesday while its anchor moved to the new Thursday.
+     */
     const moved = cloneComponent(ev);
+    const wasRelocated = (() => {
+      const startProp = getProp(moved, 'DTSTART');
+      if (!startProp) return false;
+      const tz = getParam(startProp, 'TZID') ?? graph.tzid;
+      const start = parseDateTime(startProp.value, tz);
+      return start ? start.ms !== rid : false;
+    })();
+
+    if (!wasRelocated) {
+      const startProp = getProp(moved, 'DTSTART');
+      if (startProp) {
+        startProp.value = formatLike(graph, remap.newSlotMs);
+        startProp.params = dtParams(graph, startProp.params);
+      }
+      const endProp = getProp(moved, 'DTEND');
+      if (endProp) {
+        const tz = getParam(endProp, 'TZID') ?? graph.tzid;
+        const end = parseDateTime(endProp.value, tz);
+        const own = end && getProp(moved, 'DTSTART') ? end.ms - rid : graph.durationMs;
+        endProp.value = formatLike(graph, remap.newSlotMs + own);
+        endProp.params = dtParams(graph, endProp.params);
+      }
+    }
+
     const uidProp = getProp(moved, 'UID');
     if (uidProp) uidProp.value = plan.newUid;
     const ridProp = getProp(moved, 'RECURRENCE-ID');

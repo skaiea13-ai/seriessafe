@@ -217,7 +217,16 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
    */
   const oldDaysPerWeek = graph.rule.byday.length || 1;
   const newDaysPerWeek = (params.byday && params.byday.length ? params.byday : graph.rule.byday).length || 1;
-  if (oldDaysPerWeek !== newDaysPerWeek) {
+  /*
+   * The cadence rule exists to protect exceptions, which are carried by week.
+   * A series with nothing to carry after the effective date has nothing at
+   * risk, so refusing it is pure obstruction: changing a plain weekly standup
+   * to twice weekly is an ordinary thing to want.
+   */
+  const hasFutureExceptions = graph.occurrences.some(
+    (o) => o.slotMs >= effectiveFromMs && o.kind !== 'normal',
+  );
+  if (oldDaysPerWeek !== newDaysPerWeek && hasFutureExceptions) {
     refusals.push({
       code: 'CADENCE_CHANGED',
       message:
@@ -229,7 +238,7 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
         'separate change.',
     });
   }
-  if (params.interval !== undefined && params.interval !== graph.rule.interval) {
+  if (params.interval !== undefined && params.interval !== graph.rule.interval && hasFutureExceptions) {
     refusals.push({
       code: 'CADENCE_CHANGED',
       message:
@@ -258,6 +267,18 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
     newRule.count = undefined;
     newRule.until = undefined;
     newRule.untilRaw = undefined;
+  } else if (endPolicy === 'keep-end-date' && graph.rule.count !== undefined) {
+    /*
+     * A COUNT rule states a number, not a date. Clearing the COUNT and having
+     * no UNTIL to inherit turned a ten-week course into a meeting that never
+     * ends. "Keep the end date" for such a series means the date its last
+     * occurrence would have fallen on.
+     */
+    const lastOld = graph.occurrences.length
+      ? graph.occurrences[graph.occurrences.length - 1].slotMs
+      : effectiveFromMs;
+    newRule.until = lastOld;
+    newRule.untilRaw = formatUntil(graph, lastOld);
   }
 
   // New DTSTART: the first slot of the new rule at or after the effective date,

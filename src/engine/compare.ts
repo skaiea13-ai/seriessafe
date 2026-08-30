@@ -96,8 +96,11 @@ export function compareResults(
        */
       // Fields this operation is entitled to rewrite or add, including the
       // breadcrumb SeriesSafe leaves on anything it re-anchors.
+      // DTSTART and DTEND are excluded because a metadata-only override moves
+      // with its slot: the thing being asked is whether that meeting still
+      // exists, not whether it kept a date it never owned.
       const REWRITABLE = new Set([
-        'UID', 'RECURRENCE-ID', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED',
+        'UID', 'RECURRENCE-ID', 'DTSTART', 'DTEND', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED',
         'X-SERIESSAFE-REANCHORED-FROM', 'X-SERIESSAFE-SPLIT-FROM',
       ]);
       const identity = (e: Component) => {

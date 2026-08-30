@@ -258,7 +258,10 @@ export function validateStage(
         const rid = getProp(c, 'RECURRENCE-ID');
         if (!rid) return false;
         // Formatted in the series' own value type, or the UTC form is missing
-        // its Z and nothing matches.
+        // its Z and nothing matches. RANGE=THISANDFUTURE on an anchor applies
+        // to every later occurrence, so an anchor that gained one is not the
+        // anchor that was planned.
+        if ((getParam(rid, 'RANGE') ?? '') !== '') return false;
         return rid.value === formatLike(before, r.newSlotMs);
       });
       if (hits.length !== 1) {
@@ -277,10 +280,17 @@ export function validateStage(
         if (!slot.cancelled) {
           problems.push(`${fmt(r.oldSlotMs)} was called off but is no longer cancelled`);
         }
-      } else if (slot.startMs !== r.keptStartMs) {
-        problems.push(
-          `${fmt(r.oldSlotMs)} should still start at ${fmt(r.keptStartMs ?? 0)} but starts at ${fmt(slot.startMs)}`,
-        );
+      } else {
+        // A deliberately relocated occurrence keeps the date the user chose; a
+        // metadata-only one has no date of its own and belongs at the new slot.
+        const relocated = r.keptStartMs !== undefined && r.keptStartMs !== r.oldSlotMs;
+        const want = relocated ? r.keptStartMs! : r.newSlotMs;
+        if (slot.startMs !== want) {
+          problems.push(
+            `${fmt(r.oldSlotMs)} should ${relocated ? 'still start' : 'now start'} at ${fmt(want)} ` +
+              `but starts at ${fmt(slot.startMs)}`,
+          );
+        }
       }
     }
     checks.push({
@@ -312,8 +322,11 @@ export function validateStage(
       });
       if (!src || !dst) continue;
       // Counted, not merely found: two identical properties must still be two.
+      // DTSTART and DTEND are compared as instants just below, because a
+      // metadata-only override legitimately moves with its slot while a
+      // relocated one legitimately does not.
       const skipOverride = (n: string) =>
-        ['UID', 'RECURRENCE-ID', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'].includes(n) ||
+        ['UID', 'RECURRENCE-ID', 'DTSTART', 'DTEND', 'SEQUENCE', 'DTSTAMP', 'LAST-MODIFIED'].includes(n) ||
         n.startsWith('X-SERIESSAFE-');
       const wantOv = propCounts(src.props, skipOverride);
       const gotOv = propCounts(dst.props, skipOverride);
@@ -323,6 +336,38 @@ export function validateStage(
       }
       for (const [k, n] of gotOv) {
         if ((wantOv.get(k) ?? 0) !== n) problems.push(`${k.split('|')[0]} was added to the ${fmt(r.oldSlotMs)} occurrence`);
+      }
+
+      /*
+       * An override that was deliberately relocated keeps the date the user
+       * chose. One that only changed metadata has no date of its own, so it
+       * belongs at the new slot — leaving it behind stranded it on the old
+       * weekday while its anchor moved.
+       */
+      const wasRelocated = r.keptStartMs !== undefined && r.keptStartMs !== r.oldSlotMs;
+      const wantStartMs = wasRelocated ? r.keptStartMs! : r.newSlotMs;
+      const resolveOn = (c: Component, name: string) => {
+        const p = getProp(c, name);
+        if (!p) return undefined;
+        const tz = getParam(p, 'TZID');
+        if (tz && !isKnownTimeZone(tz)) return null;
+        return parseDateTime(p.value, tz ?? before.tzid)?.ms ?? null;
+      };
+      const gotOvStart = resolveOn(dst, 'DTSTART');
+      if (gotOvStart !== undefined && gotOvStart !== wantStartMs) {
+        problems.push(
+          `the ${fmt(r.oldSlotMs)} occurrence should start at ${fmt(wantStartMs)} but starts at ` +
+            `${gotOvStart === null ? '(unreadable)' : fmt(gotOvStart)}`,
+        );
+      }
+      const srcEnd = resolveOn(src, 'DTEND');
+      const srcStart = resolveOn(src, 'DTSTART');
+      if (srcEnd != null && srcStart != null) {
+        const ownDuration = srcEnd - srcStart;
+        const gotOvEnd = resolveOn(dst, 'DTEND');
+        if (gotOvEnd !== undefined && gotOvEnd !== wantStartMs + ownDuration) {
+          problems.push(`the ${fmt(r.oldSlotMs)} occurrence changed length`);
+        }
       }
       const srcAlarms = src.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
       const dstAlarms = dst.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();
@@ -364,6 +409,23 @@ export function validateStage(
         if (tz && !isKnownTimeZone(tz)) return null;
         return parseDateTime(p.value, tz ?? undefined)?.ms ?? null;
       };
+      /*
+       * Parameters riding on the rewritten date properties, beyond VALUE and
+       * TZID, are still the user's. Rewriting the value is not licence to drop
+       * an X- parameter that came with it.
+       */
+      const extraParams = (p: Prop | undefined) =>
+        JSON.stringify(
+          (p?.params ?? []).filter((x) => x.name !== 'VALUE' && x.name !== 'TZID').map((x) => [x.name, x.values]),
+        );
+      for (const nameOf of ['DTSTART', 'DTEND'] as const) {
+        const had = getProp(before.master, nameOf);
+        const has = getProp(newMaster, nameOf);
+        if (had && has && extraParams(had) !== extraParams(has)) {
+          contentProblemsOfStart.push(`${nameOf} lost or gained parameters on the new series`);
+        }
+      }
+
       const startProp2 = getProp(newMaster, 'DTSTART');
       const gotStart = resolved(startProp2);
       if (gotStart !== plan.newDtstartMs) {
@@ -493,7 +555,29 @@ export function validateStage(
   {
     const pastCount = oldAfter.filter((o) => !o.cancelled).length;
 
-    if (!before.unbounded) {
+    if (!before.unbounded && plan.endPolicy === 'keep-end-date') {
+      /*
+       * This policy holds the end date and lets the count move, so counting
+       * meetings is the wrong question — it was failing ordinary requests.
+       * What must hold is that the series still ends when it used to.
+       */
+      const lastNew = newAfter.length ? newAfter[newAfter.length - 1].slotMs : null;
+      const lastOld = plan.oldEndsAtMs;
+      const sameDay = (a: number | null, b: number | null) =>
+        a !== null && b !== null &&
+        new Intl.DateTimeFormat('en-CA', { timeZone: before.tzid ?? 'UTC' }).format(new Date(a)) ===
+          new Intl.DateTimeFormat('en-CA', { timeZone: before.tzid ?? 'UTC' }).format(new Date(b));
+      checks.push({
+        id: 'count-reconciles',
+        title: 'The series still ends when it used to',
+        pass: lastNew !== null && lastOld !== null && lastNew <= lastOld,
+        evidence:
+          lastNew === null || lastOld === null
+            ? 'The end of the series could not be determined.'
+            : `${pastCount} kept before the change; the series now ends ${fmt(lastNew)}` +
+              `${sameDay(lastNew, lastOld) ? ', the same day as before' : `, on or before the original ${fmt(lastOld)}`}.`,
+      });
+    } else if (!before.unbounded) {
       const futureCount = newAfter.filter((o) => !o.cancelled).length;
       const expected = origBefore.filter((o) => !o.cancelled).length;
       const got = pastCount + futureCount;
