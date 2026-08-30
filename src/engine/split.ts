@@ -160,8 +160,30 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
     });
   }
 
-  const past = graph.occurrences.filter((o) => o.slotMs < effectiveFromMs);
-  const future = graph.occurrences.filter((o) => o.slotMs >= effectiveFromMs);
+  /*
+   * An all-day value names a calendar day, not an instant. Splitting on the
+   * instant put an added date on the very day of the change on the wrong side
+   * of it — and only in zones behind UTC, so the same file behaved differently
+   * in New York and in Seoul.
+   */
+  const utcDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const zonedDay = (ms: number) => {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: graph.tzid && graph.tzid.length ? graph.tzid : 'UTC',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date(ms));
+    } catch {
+      return utcDay(ms);
+    }
+  };
+  const boundaryDay = zonedDay(effectiveFromMs);
+  const dateValuedExtras = new Set(graph.rdateEntries.filter((e) => e.isDate).map((e) => e.ms));
+  const isFuture = (o: { slotMs: number }) =>
+    dateValuedExtras.has(o.slotMs) ? utcDay(o.slotMs) >= boundaryDay : o.slotMs >= effectiveFromMs;
+
+  const past = graph.occurrences.filter((o) => !isFuture(o));
+  const future = graph.occurrences.filter(isFuture);
 
   /*
    * An override whose RECURRENCE-ID matches no slot of the current rule has no
@@ -520,24 +542,8 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
    * side of the split — an added date on the very day of the change stayed
    * with the series being ended.
    */
-  const dayOf = (ms: number) =>
-    new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' })
-      .format(new Date(ms));
-  const effectiveDay = (() => {
-    try {
-      return new Intl.DateTimeFormat('en-CA', {
-        timeZone: graph.tzid && graph.tzid.length ? graph.tzid : 'UTC',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-      }).format(new Date(effectiveFromMs));
-    } catch {
-      return dayOf(effectiveFromMs);
-    }
-  })();
-  const isAfterBoundary = (e: { ms: number; isDate: boolean }) =>
-    e.isDate ? dayOf(e.ms) >= effectiveDay : e.ms >= effectiveFromMs;
-
   for (const entry of graph.rdateEntries) {
-    if (!isAfterBoundary(entry)) continue;
+    if (!isFuture({ slotMs: entry.ms })) continue;
     if (remaps.some((r) => r.oldSlotMs === entry.ms && r.kind === 'extra')) continue;
     const week = weekKey(entry.ms, graph.tzid, graph.rule.wkst);
     const oldRow = oldWeeks.get(week) ?? [];
@@ -598,6 +604,26 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
           `The clocks change around ${formatHuman(clash, graph.tzid)}, so a meeting at ${intended} that ` +
           'day either does not exist or happens twice.',
         remedy: 'Move the series to a different time of day, or handle that week separately.',
+      });
+    }
+  }
+
+  /*
+   * An added date keeps its own date, and the new rule may now produce that
+   * same date. The recurrence set is a union, so the two collapse into one and
+   * a meeting disappears — six sessions came out as five, confirmed against an
+   * independent parser. There is no way to keep both without inventing a date.
+   */
+  const keptExtras = remaps.filter((r) => r.kind === 'extra' && r.newSlotMs === r.oldSlotMs);
+  const newSlotSet = new Set(newSlots);
+  for (const extra of keptExtras) {
+    if (newSlotSet.has(extra.newSlotMs)) {
+      refusals.push({
+        code: 'ADDED_DATE_COLLIDES',
+        message:
+          `The added session on ${formatHuman(extra.oldSlotMs, graph.tzid)} would fall on the same date as a ` +
+          'meeting of the new rule, and the two cannot both be kept.',
+        remedy: 'Move that session to another date first, or choose different days for the series.',
       });
     }
   }

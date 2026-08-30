@@ -312,7 +312,9 @@ test('changing how often the series meets is refused, not mis-anchored', () => {
     `expected CADENCE_CHANGED, got ${widened.refusals.map((r) => r.code).join(',')}`);
 
   // Same count of days is still allowed: that is the operation this app is for.
-  const sameCount = simulateSplit(g, { effectiveFromMs: EFFECTIVE, byday: ['MO', 'WE'] });
+  // Wednesday is avoided here because the fixture's extra session falls on one,
+  // and an added date landing on a meeting of the new rule is its own refusal.
+  const sameCount = simulateSplit(g, { effectiveFromMs: EFFECTIVE, byday: ['MO', 'FR'] });
   assert.ok(sameCount.ok, JSON.stringify(sameCount.refusals));
 
   // Changing the interval moves every position onto a different week.

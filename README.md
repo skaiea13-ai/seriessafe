@@ -96,6 +96,7 @@ Staging is refused, with a remedy, when SeriesSafe cannot prove the outcome:
 | `CLOCK_CHANGE_COLLISION` | An occurrence would land where the clocks change, so its time either does not exist or happens twice. |
 | `ADDED_DATE_NOT_ALIGNED` | An added date coincides with a meeting the new rule has no matching slot for. |
 | `NO_PATTERN_AFTER_DATE` | The repeating rule has already finished; only individually added dates remain. |
+| `ADDED_DATE_COLLIDES` | An added date would fall on a meeting of the new rule, and the two cannot both survive. |
 | `END_DATE_DROPS_MEETINGS` | Holding the old end date would quietly cost a meeting. |
 | `NOTHING_AFTER_DATE` / `NOTHING_BEFORE_DATE` | There is no split to make. |
 
@@ -152,11 +153,11 @@ Both themes currently report zero contrast failures, no touch target under 24px,
 
 The test suite checks SeriesSafe's output with **[ical.js](https://github.com/kewisch/ical.js) (Mozilla)** — an independent parser, not our own code — including exception relation and occurrence resolution.
 
-Eighty-two tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
+Eighty-six tests cover the headline surgery, the conventional-edit control, every refusal path, the WebMCP tool layer end to end (including that `commit_staged_split` is unreachable before validation), and real-world shapes: all-day series, `COUNT`-based rules, fortnightly phase, series crossing a DST boundary, multiple series in one file, and malformed input.
 
 ```bash
 npm install
-npm test              # 82 unit and integration tests
+npm test              # 86 unit and integration tests
 npm run test:sweep    # 405 legitimate open-ended moves, none refused
 npm run test:webmcp   # 34 checks against real Chrome WebMCP (macOS, Chrome 149+)
 npm run test:a11y     # contrast, targets, focus, overflow — both themes

@@ -459,8 +459,15 @@ export function validateStage(
           contentProblemsOfStart.push(
             `each meeting would run to ${gotEnd === null ? '(unreadable)' : fmt(gotEnd)} instead of ${fmt(wantEnd)}`,
           );
-        } else if (dateForm(dtendProp) !== wantForm) {
-          contentProblemsOfStart.push('the end was written in a different time-zone or value form than the series uses');
+        } else {
+          // Compared against the *end's own* original form: an end may legally
+          // be stated in a different zone from the start, and forcing it onto
+          // the start's zone would keep the instant and lose the fact.
+          const originalEnd = getProp(before.master, 'DTEND');
+          const wantEndForm = originalEnd ? dateForm(originalEnd) : wantForm;
+          if (dateForm(dtendProp) !== wantEndForm) {
+            contentProblemsOfStart.push('the end was written in a different time zone or value form than before');
+          }
         }
       }
       const a = before.master.children.filter((c) => c.name === 'VALARM').map(propFingerprint).sort();

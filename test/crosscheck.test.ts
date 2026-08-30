@@ -1160,3 +1160,71 @@ test('a file mixing floating and absolute times is refused', () => {
                             'RDATE:20260915T090000'].join('\r\n'));
   assert.ok(attempt(allFloating, Date.UTC(2026, 8, 1), ['TH']).plan.ok);
 });
+
+/* ---- thirteenth review round --------------------------------------- */
+
+test('an endless series that began years ago can still be edited', () => {
+  // The window for a rule with no end was anchored to DTSTART, so a standup
+  // that began in 2020 modelled nothing after 2022 and editing it in 2026 was
+  // refused for having no occurrences left.
+  const ics = wrap(['DTSTART;TZID=Asia/Seoul:20200107T190000',
+                    'DTEND;TZID=Asia/Seoul:20200107T210000',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU'].join('\r\n'));
+  const { plan, report } = attempt(ics, startOfDayInZone('2026-09-01', 'Asia/Seoul')!, ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  assert.ok(report!.pass, report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; '));
+});
+
+test('an added date that would collide with the new rule is refused', () => {
+  // An added date keeps its own date and the new rule may now produce it. The
+  // recurrence set is a union, so the two collapse and a meeting disappears —
+  // six sessions came out as five, confirmed against ical.js.
+  const ics = wrap(['DTSTART:20260901T090000Z', 'DTEND:20260901T100000Z',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=20',
+                    'RDATE:20260916T090000Z'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(ics), UID)!;
+  const plan = simulateSplit(g, { effectiveFromMs: Date.UTC(2026, 8, 8), byday: ['WE'] });
+  assert.ok(!plan.ok);
+  assert.ok(plan.refusals.some((r) => r.code === 'ADDED_DATE_COLLIDES'),
+    plan.refusals.map((r) => r.code).join(','));
+});
+
+test('an all-day added date splits by its day, in every time zone', () => {
+  // Splitting on the instant put a date on the wrong side of the change, and
+  // only in zones behind UTC — the same file behaved differently in New York
+  // and in Seoul.
+  for (const zone of ['America/New_York', 'Asia/Seoul', 'Australia/Sydney']) {
+    const ics = wrap([`DTSTART;TZID=${zone}:20260106T090000`,
+                      `DTEND;TZID=${zone}:20260106T100000`,
+                      'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=80',
+                      'RDATE;VALUE=DATE:20260901'].join('\r\n'));
+    const { plan, report } = attempt(ics, startOfDayInZone('2026-09-01', zone)!, ['TH']);
+    assert.ok(plan.ok, `${zone}: ${plan.refusals.map((r) => r.code).join(', ')}`);
+    assert.ok(report!.pass, `${zone}: ${report!.checks.filter((c) => !c.pass).map((c) => c.evidence).join('; ')}`);
+  }
+});
+
+test('an end stated in another zone keeps that zone', () => {
+  // A flight lands in another country. Forcing the end onto the start's zone
+  // keeps the instant and loses the fact.
+  const ics = wrap(['DTSTART;TZID=America/New_York:20260106T090000',
+                    'DTEND;TZID=Europe/London:20260106T160000',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=80'].join('\r\n'));
+  const cal = parseIcs(ics);
+  const g = buildSeriesGraph(cal, UID)!;
+  const plan = simulateSplit(g, {
+    effectiveFromMs: startOfDayInZone('2026-09-01', 'America/New_York')!, byday: ['TH'],
+  });
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  const out = serializeIcs(applySplit(cal, g, plan).calendar);
+  assert.match(out, /DTEND;TZID=Europe\/London:20260903T160000/, 'the arrival zone survives');
+  assert.ok(validateStage(cal, applySplit(cal, g, plan).calendar, g, plan).pass);
+
+  // Swapping it for a third zone is still caught.
+  const tampered = applySplit(cal, g, plan).calendar;
+  const master = tampered.children.find(
+    (c) => c.name === 'VEVENT' && getProp(c, 'UID')?.value === plan.newUid && !getProp(c, 'RECURRENCE-ID'),
+  )!;
+  getProp(master, 'DTEND')!.params = [{ name: 'TZID', values: ['Asia/Seoul'] }];
+  assert.ok(!validateStage(cal, tampered, g, plan).pass);
+});

@@ -237,8 +237,15 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   // silently dropped far-future occurrences and rewrote long series as short
   // finite ones, with every invariant still reporting success.
   const unbounded = rule.count === undefined && rule.until === undefined;
+  /*
+   * For a rule with no end, the window has to reach the part of the calendar
+   * someone is actually working in. Anchoring it to DTSTART meant a standup
+   * that began in 2020 modelled nothing after 2022, and editing it in 2026 was
+   * refused for having no occurrences left.
+   */
   const furthestException = Math.max(
     dtstart.ms,
+    Date.now(),
     ...exdates, ...rdates, ...[...overrides.keys()],
   );
   const LIMIT = 20000;

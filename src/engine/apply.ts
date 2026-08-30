@@ -153,8 +153,18 @@ export function applySplit(cal: Component, graph: SeriesGraph, plan: SplitPlan):
   }
   const newDtend = getProp(newMaster, 'DTEND');
   if (newDtend) {
-    newDtend.value = formatLike(graph, plan.newDtstartMs + graph.durationMs);
-    newDtend.params = dtParams(graph, newDtend.params);
+    /*
+     * An end may be stated in a different zone from the start — a flight
+     * landing in another country. Forcing it onto the start's zone keeps the
+     * instant and loses the fact.
+     */
+    const endTz = getParam(newDtend, 'TZID');
+    const endParsed = parseDateTime(newDtend.value, endTz ?? graph.tzid);
+    newDtend.value = formatDateTime(plan.newDtstartMs + graph.durationMs, {
+      isDate: endParsed?.isDate ?? graph.isDate,
+      isUtc: endParsed?.isUtc ?? (graph.isUtc && !endTz),
+      tzid: endTz ?? (endParsed?.isUtc ? undefined : graph.tzid),
+    });
   }
   getProps(newMaster, 'RRULE')[0].value = plan.newRuleText;
 
