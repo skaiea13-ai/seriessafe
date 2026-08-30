@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import ICAL from 'ical.js';
 
-import { parseIcs } from '../src/ics/parse.ts';
+import { parseIcs, startOfDayInZone } from '../src/ics/parse.ts';
 import { serializeIcs } from '../src/ics/serialize.ts';
 import { buildSeriesGraph, listRecurringUids } from '../src/engine/series.ts';
 import { simulateSplit } from '../src/engine/split.ts';
@@ -181,5 +181,79 @@ test('a malformed calendar is rejected without throwing', () => {
     const c = parseIcs(junk);
     assert.deepEqual(listRecurringUids(c), []);
     assert.equal(buildSeriesGraph(c, 'nope@test'), null);
+  }
+});
+
+test('the shapes real exporters emit are accepted, not refused', () => {
+  /*
+   * Twelve refusal codes is a lot of ways to say no, and a tool that refuses
+   * ordinary calendars is no use. These are the forms Google, Outlook and
+   * Apple actually write, quirks included: empty DESCRIPTION and LOCATION,
+   * X-MICROSOFT-* and X-APPLE-* properties, LANGUAGE parameters, an alarm with
+   * its own UID, an embedded VTIMEZONE, all-day VALUE=DATE, and an
+   * open-ended rule.
+   */
+  const exports: Record<string, string[]> = {
+    'Google (TZID and an embedded VTIMEZONE)': [
+      'BEGIN:VCALENDAR', 'PRODID:-//Google Inc//Google Calendar 70.9054//EN', 'VERSION:2.0',
+      'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Work', 'X-WR-TIMEZONE:America/New_York',
+      'BEGIN:VTIMEZONE', 'TZID:America/New_York',
+      'BEGIN:DAYLIGHT', 'TZOFFSETFROM:-0500', 'TZOFFSETTO:-0400', 'TZNAME:EDT',
+      'DTSTART:19700308T020000', 'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU', 'END:DAYLIGHT',
+      'BEGIN:STANDARD', 'TZOFFSETFROM:-0400', 'TZOFFSETTO:-0500', 'TZNAME:EST',
+      'DTSTART:19701101T020000', 'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU', 'END:STANDARD',
+      'END:VTIMEZONE',
+      'BEGIN:VEVENT', 'DTSTART;TZID=America/New_York:20260303T090000',
+      'DTEND;TZID=America/New_York:20260303T093000', 'RRULE:FREQ=WEEKLY;BYDAY=TU',
+      'DTSTAMP:20260220T041500Z', 'UID:g1@google.com', 'CREATED:20260220T041500Z',
+      'DESCRIPTION:', 'LAST-MODIFIED:20260220T041500Z', 'LOCATION:', 'SEQUENCE:0',
+      'STATUS:CONFIRMED', 'SUMMARY:Standup', 'TRANSP:OPAQUE', 'END:VEVENT', 'END:VCALENDAR',
+    ],
+    'Outlook (UTC times and X-MICROSOFT properties)': [
+      'BEGIN:VCALENDAR', 'PRODID:-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN', 'VERSION:2.0',
+      'METHOD:PUBLISH', 'X-MS-OLK-FORCEINSPECTOROPEN:TRUE',
+      'BEGIN:VEVENT', 'CLASS:PUBLIC', 'CREATED:20260220T041500Z', 'DTEND:20260303T100000Z',
+      'DTSTAMP:20260220T041500Z', 'DTSTART:20260303T090000Z', 'LAST-MODIFIED:20260220T041500Z',
+      'PRIORITY:5', 'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=52', 'SEQUENCE:0',
+      'SUMMARY;LANGUAGE=en-gb:Team sync', 'TRANSP:OPAQUE', 'UID:o1@outlook.com',
+      'X-MICROSOFT-CDO-BUSYSTATUS:BUSY', 'X-MICROSOFT-CDO-IMPORTANCE:1',
+      'END:VEVENT', 'END:VCALENDAR',
+    ],
+    'Apple (an alarm carrying its own UID)': [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Apple Inc.//macOS 15.0//EN', 'CALSCALE:GREGORIAN',
+      'BEGIN:VEVENT', 'CREATED:20260220T041500Z', 'UID:a1@apple.com',
+      'DTEND;TZID=Europe/London:20260303T100000', 'TRANSP:OPAQUE',
+      'X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC', 'SUMMARY:Gym',
+      'DTSTART;TZID=Europe/London:20260303T090000', 'DTSTAMP:20260220T041500Z', 'SEQUENCE:0',
+      'RRULE:FREQ=WEEKLY;BYDAY=TU;INTERVAL=1',
+      'BEGIN:VALARM', 'X-WR-ALARMUID:x1', 'UID:x1', 'TRIGGER:-PT15M',
+      'DESCRIPTION:Event reminder', 'ACTION:DISPLAY', 'END:VALARM',
+      'END:VEVENT', 'END:VCALENDAR',
+    ],
+    'Google (all-day with a VALUE=DATE exception)': [
+      'BEGIN:VCALENDAR', 'PRODID:-//Google Inc//Google Calendar 70.9054//EN', 'VERSION:2.0',
+      'BEGIN:VEVENT', 'DTSTART;VALUE=DATE:20260302', 'DTEND;VALUE=DATE:20260303',
+      'RRULE:FREQ=WEEKLY;BYDAY=MO', 'EXDATE;VALUE=DATE:20260907', 'DTSTAMP:20260220T041500Z',
+      'UID:g2@google.com', 'SUMMARY:Bin day', 'TRANSP:TRANSPARENT', 'END:VEVENT', 'END:VCALENDAR',
+    ],
+  };
+
+  for (const [label, lines] of Object.entries(exports)) {
+    const text = lines.join('\r\n') + '\r\n';
+    const c = parseIcs(text);
+    const uids = listRecurringUids(c);
+    assert.equal(uids.length, 1, `${label}: one recurring series`);
+    const g = buildSeriesGraph(c, uids[0]);
+    assert.ok(g, `${label}: the graph builds`);
+
+    const plan = simulateSplit(g!, {
+      effectiveFromMs: startOfDayInZone('2026-09-01', g!.tzid)!,
+      byday: ['TH'],
+    });
+    assert.ok(plan.ok, `${label} was refused: ${plan.refusals.map((r) => r.code).join(', ')}`);
+
+    const report = validateStage(c, applySplit(c, g!, plan).calendar, g!, plan);
+    assert.ok(report.pass,
+      `${label} failed validation: ${report.checks.filter((x) => !x.pass).map((x) => x.evidence).join('; ')}`);
   }
 });
