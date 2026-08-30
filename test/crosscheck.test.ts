@@ -1090,3 +1090,73 @@ test('a start time that does not exist is refused even when it is inherited', ()
   assert.ok(plan.refusals.some((r) => r.code === 'TIME_DOES_NOT_EXIST'),
     plan.refusals.map((r) => r.code).join(','));
 });
+
+/* ---- twelfth review round ------------------------------------------ */
+
+test('a series that would land on a clock change is refused', () => {
+  /*
+   * Only the first new date was checked, so later occurrences were generated
+   * at the corrected time — inventing a meeting the original never had. And a
+   * one-hour meeting spanning an autumn fold was written with identical start
+   * and end, a meeting zero minutes long.
+   */
+  const build = (start: string, end: string) =>
+    wrap([`DTSTART;TZID=America/New_York:20260106T${start}`,
+          `DTEND;TZID=America/New_York:20260106T${end}`,
+          'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=60'].join('\r\n'));
+  const from = (iso: string) => startOfDayInZone(iso, 'America/New_York')!;
+
+  const gap = simulateSplit(buildSeriesGraph(parseIcs(build('023000', '033000')), UID)!,
+    { effectiveFromMs: from('2026-02-01'), byday: ['SU'] });
+  assert.ok(!gap.ok, 'a 02:30 series moved onto Sundays crosses a spring-forward');
+  assert.ok(gap.refusals.some((r) => r.code === 'CLOCK_CHANGE_COLLISION'),
+    gap.refusals.map((r) => r.code).join(','));
+
+  const fold = simulateSplit(buildSeriesGraph(parseIcs(build('013000', '023000')), UID)!,
+    { effectiveFromMs: from('2026-10-01'), byday: ['SU'] });
+  assert.ok(!fold.ok, 'an hour spanning the autumn fold cannot be written down');
+  assert.ok(fold.refusals.some((r) => r.code === 'CLOCK_CHANGE_COLLISION'),
+    fold.refusals.map((r) => r.code).join(','));
+
+  // Ordinary times across the same changes are unaffected.
+  const fine = simulateSplit(buildSeriesGraph(parseIcs(build('090000', '100000')), UID)!,
+    { effectiveFromMs: from('2026-02-01'), byday: ['SU'] });
+  assert.ok(fine.ok, JSON.stringify(fine.refusals));
+});
+
+test('a UTC value keeps its Z and gains no time zone', () => {
+  // Falling back to the series' parameters put TZID on a value written in UTC,
+  // saying something the file never said.
+  const ics = wrap(['DTSTART;TZID=America/New_York:20260106T090000',
+                    'DTEND;TZID=America/New_York:20260106T100000',
+                    'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=80',
+                    'RDATE:20260415T190000Z'].join('\r\n'));
+  const { plan, out } = attempt(ics, startOfDayInZone('2026-09-01', 'America/New_York')!, ['TH']);
+  assert.ok(plan.ok, JSON.stringify(plan.refusals));
+  const rdate = out.split('\r\n').find((l) => l.startsWith('RDATE'))!;
+  assert.match(rdate, /^RDATE:20260415T190000Z$/, `expected a bare UTC value, got ${rdate}`);
+});
+
+test('a file mixing floating and absolute times is refused', () => {
+  /*
+   * Floating local time means "whatever the clock says wherever you are", and
+   * this parser represents it with the same number as the UTC instant of that
+   * wall clock. A floating 09:00 and an absolute 09:00Z therefore looked like
+   * one occurrence. Distinguishing them properly is a larger change than this
+   * scope allows, so such a file is declined rather than guessed at.
+   */
+  const mixed = wrap(['DTSTART:20260106T090000', 'DTEND:20260106T100000',
+                      'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=80',
+                      'RDATE:20260915T090000Z'].join('\r\n'));
+  const g = buildSeriesGraph(parseIcs(mixed), UID)!;
+  assert.ok(g.unreadableDates.some((d) => /floating/.test(d)), 'the mix is reported');
+  const { plan } = attempt(mixed, Date.UTC(2026, 8, 1), ['TH']);
+  assert.ok(!plan.ok);
+  assert.ok(codes(plan).includes('UNREADABLE_DATE_VALUE'), codes(plan).join(','));
+
+  // A consistently floating file is fine, and so is a consistently absolute one.
+  const allFloating = wrap(['DTSTART:20260106T090000', 'DTEND:20260106T100000',
+                            'RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=80',
+                            'RDATE:20260915T090000'].join('\r\n'));
+  assert.ok(attempt(allFloating, Date.UTC(2026, 8, 1), ['TH']).plan.ok);
+});

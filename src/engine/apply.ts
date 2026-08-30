@@ -66,7 +66,13 @@ function dateListProps(
       .sort((a, b) => a.ms - b.ms);
     return {
       name,
-      params: g.params.length ? g.params : dtParams(graph),
+      // A value written in UTC carries no TZID; adding the series' zone to it
+      // would say something the file never said.
+      params: g.params.length
+        ? g.params
+        : kept[0]?.isUtc
+          ? []
+          : dtParams(graph),
       value: kept
         .map((e) => formatDateTime(e.ms, { isDate: e.isDate, isUtc: e.isUtc, tzid: e.tzid }))
         .join(','),

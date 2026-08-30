@@ -1,7 +1,7 @@
 import { getProp, getProps, getParam } from '../ics/types.ts';
 import { formatDateTime, parseDateTime } from '../ics/parse.ts';
 import { expandRRule, formatRRule, parseRRule, type RRule } from './rrule.ts';
-import { tzOffsetMs } from '../ics/parse.ts';
+import { tzOffsetMs, localTimeIsAmbiguous } from '../ics/parse.ts';
 import { PRESERVED_PROPS, formatUntil, type SeriesGraph, type Occurrence } from './series.ts';
 
 export interface SplitParams {
@@ -514,8 +514,30 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
    * `extra` occurrence, so nothing was carrying it and it vanished from the
    * output entirely. It moves with the slot it coincides with.
    */
+  /*
+   * An all-day value names a calendar date, not an instant. Comparing its UTC
+   * midnight against a zoned boundary put a date-valued RDATE on the wrong
+   * side of the split — an added date on the very day of the change stayed
+   * with the series being ended.
+   */
+  const dayOf = (ms: number) =>
+    new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' })
+      .format(new Date(ms));
+  const effectiveDay = (() => {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: graph.tzid && graph.tzid.length ? graph.tzid : 'UTC',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date(effectiveFromMs));
+    } catch {
+      return dayOf(effectiveFromMs);
+    }
+  })();
+  const isAfterBoundary = (e: { ms: number; isDate: boolean }) =>
+    e.isDate ? dayOf(e.ms) >= effectiveDay : e.ms >= effectiveFromMs;
+
   for (const entry of graph.rdateEntries) {
-    if (entry.ms < effectiveFromMs) continue;
+    if (!isAfterBoundary(entry)) continue;
     if (remaps.some((r) => r.oldSlotMs === entry.ms && r.kind === 'extra')) continue;
     const week = weekKey(entry.ms, graph.tzid, graph.rule.wkst);
     const oldRow = oldWeeks.get(week) ?? [];
@@ -531,10 +553,55 @@ export function simulateSplit(graph: SeriesGraph, params: SplitParams): SplitPla
         label: `Added date — ${formatHuman(entry.ms, graph.tzid)}`,
         carried: ['RDATE'],
       });
+    } else {
+      // It coincides with a slot the new rule has no counterpart for. Dropping
+      // it silently is exactly what this tool exists to prevent.
+      refusals.push({
+        code: 'ADDED_DATE_NOT_ALIGNED',
+        message:
+          `The added date on ${formatHuman(entry.ms, graph.tzid)} falls on a meeting the new rule does not ` +
+          'have a matching slot for.',
+        remedy: 'Choose an effective date at the start of a week, or handle that date separately.',
+      });
     }
   }
 
   // UNTIL must share DTSTART's value type (RFC 5545 §3.3.10).
+  /*
+   * An occurrence on a clock change cannot be written down unambiguously: a
+   * spring-forward gap has no such time, and an autumn fold has two. Checking
+   * only the first new date left later ones to be generated at the corrected
+   * time — inventing a meeting the original series never had — and a one-hour
+   * meeting inside a fold serialized as zero minutes long.
+   */
+  if (!graph.isDate && graph.tzid && anchor !== null) {
+    const wallOf = (ms: number) => {
+      const m = /T(\d{2})(\d{2})/.exec(formatDateTime(ms, { tzid: graph.tzid }));
+      return m ? `${m[1]}:${m[2]}` : '';
+    };
+    // The time the series is meant to keep, taken from its first new date.
+    const intended = wallOf(anchor);
+    const clash = newSlots.find((ms) => {
+      // A gap: the intended time does not exist, and expansion has quietly
+      // produced the corrected one instead.
+      if (wallOf(ms) !== intended) return true;
+      // A fold: two instants share one wall clock. That applies to the end of
+      // a meeting as much as its start — an hour spanning the change was
+      // written with identical start and end, a meeting zero minutes long.
+      if (localTimeIsAmbiguous(ms, graph.tzid)) return true;
+      return graph.durationMs > 0 && localTimeIsAmbiguous(ms + graph.durationMs, graph.tzid);
+    });
+    if (clash !== undefined) {
+      refusals.push({
+        code: 'CLOCK_CHANGE_COLLISION',
+        message:
+          `The clocks change around ${formatHuman(clash, graph.tzid)}, so a meeting at ${intended} that ` +
+          'day either does not exist or happens twice.',
+        remedy: 'Move the series to a different time of day, or handle that week separately.',
+      });
+    }
+  }
+
   const untilRaw = formatUntil(graph, effectiveFromMs - 1000);
 
   const oldEndsAtMs = future.length ? future[future.length - 1].slotMs : null;

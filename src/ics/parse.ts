@@ -323,3 +323,18 @@ export function startOfDayInZone(input: string, tzid?: string): number | null {
   if (!parseDateTime(`${y}${mo}${d}`)) return null;
   return tzid ? zonedToUtc(+y, +mo - 1, +d, 0, 0, 0, tzid) : utcOf(+y, +mo - 1, +d);
 }
+
+/**
+ * Whether a wall-clock time is one the zone does not name exactly once.
+ *
+ * A spring-forward gap has no such instant at all; an autumn fold has two.
+ * Either way an occurrence there cannot be written down unambiguously: the
+ * instant re-serializes to a wall clock that resolves back to a different
+ * instant, and a one-hour meeting in the fold came out zero minutes long.
+ */
+export function localTimeIsAmbiguous(ms: number, tzid?: string): boolean {
+  if (!tzid) return false;
+  const literal = formatDateTime(ms, { tzid });
+  const back = parseDateTime(literal, tzid);
+  return back === null || back.ms !== ms;
+}

@@ -251,6 +251,26 @@ export function buildSeriesGraph(cal: Component, uid: string, horizonMs?: number
   const truncated = expanded.length > LIMIT;
   const ruleSlots = truncated ? expanded.slice(0, LIMIT) : expanded;
   const ruleSet = new Set(ruleSlots);
+  /*
+   * Floating local time means "whatever the clock says wherever you are", and
+   * this parser represents it with the same number as the UTC instant of that
+   * wall clock. That is fine on its own, but a file that mixes floating with
+   * absolute values cannot be compared faithfully: a floating 09:00 and an
+   * absolute 09:00Z would look like one occurrence. Rather than guess, such a
+   * file is refused.
+   */
+  const masterIsFloating = !dtstart.isUtc && !tzid && !dtstart.isDate;
+  for (const e of [...ex.entries, ...rd.entries]) {
+    if (e.isDate) continue;
+    const entryIsFloating = !e.isUtc && !e.tzid;
+    if (entryIsFloating !== masterIsFloating) {
+      unreadableFixed.push(
+        `a ${entryIsFloating ? 'floating' : 'fixed'} date value on a ${masterIsFloating ? 'floating' : 'fixed'} series`,
+      );
+      break;
+    }
+  }
+
   const slots = [...ruleSlots];
   for (const r of rdates) if (!ruleSet.has(r)) slots.push(r);
   slots.sort((a, b) => a - b);
