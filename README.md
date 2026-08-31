@@ -31,7 +31,7 @@ SeriesSafe:
 1. reads the **series graph** behind the calendar grid — the rule, the cancellations (`EXDATE`), the detached overrides (`RECURRENCE-ID`), the added dates (`RDATE`) and the ordinal identity that links them;
 2. re-anchors every future exception onto the new pattern;
 3. shows you the same request applied **two ways** — as SeriesSafe applies it, and as a conventional edit applies it — with the losses itemised;
-4. verifies eight invariants **against the serialized `.ics` bytes**, not against its own plan;
+4. verifies nine invariants **against the serialized `.ics` bytes**, not against its own plan;
 5. only then makes committing possible at all.
 
 Everything runs in the tab. No calendar account, no upload, no server.
@@ -183,7 +183,7 @@ The operating surface is deliberately narrow, and everything outside it is refus
 
 **Operated on:** `FREQ=WEEKLY` only — and now actually enforced, rather than documented and quietly ignored. With `INTERVAL`, `BYDAY`, `COUNT`, `UNTIL` and `WKST`; UTC, floating and `TZID` times with DST-correct wall-clock arithmetic including gap and fold, including the zone names Exchange invents for itself (`Pacific Standard Time`) by reading the `VTIMEZONE` the file carries; all-day (`VALUE=DATE`) series; `EXDATE`, `RDATE`, detached `RECURRENCE-ID`, `STATUS:CANCELLED` overrides, `VALARM`, `ATTENDEE` with its parameters, `X-` properties, and lossless retention of every property SeriesSafe does not itself understand.
 
-Twenty-one refusal codes is a lot of ways to say no, so the suite checks the other direction just as hard. Ninety ordinary schedules — five time zones that observe daylight saving, six times of day people actually meet at, three effective dates around the changes — must all be accepted. So must the shapes Google, Outlook and Apple actually export — empty `DESCRIPTION` and `LOCATION`, `X-MICROSOFT-*` and `X-APPLE-*` properties, `LANGUAGE` parameters, an alarm carrying its own `UID`, an embedded `VTIMEZONE`, all-day `VALUE=DATE`, and open-ended rules — are all accepted and validated.
+Twenty-two refusal codes is a lot of ways to say no, so the suite checks the other direction just as hard. Ninety ordinary schedules — five time zones that observe daylight saving, six times of day people actually meet at, three effective dates around the changes — must all be accepted. So must the shapes Google, Outlook and Apple actually export — empty `DESCRIPTION` and `LOCATION`, `X-MICROSOFT-*` and `X-APPLE-*` properties, `LANGUAGE` parameters, an alarm carrying its own `UID`, an embedded `VTIMEZONE`, all-day `VALUE=DATE`, and open-ended rules — are all accepted and validated.
 
 **Refused:** any frequency other than weekly; `RANGE=THISANDFUTURE`; multiple `RRULE`s; positional parts (`BYSETPOS`, `BYWEEKNO`, `BYYEARDAY`, `BYMONTH`, `BYHOUR`…); and a start time that does not exist on the day it would first apply, because writing the corrected time into `DTSTART` would move every later occurrence with it.
 

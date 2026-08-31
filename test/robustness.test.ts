@@ -186,7 +186,7 @@ test('a malformed calendar is rejected without throwing', () => {
 
 test('the shapes real exporters emit are accepted, not refused', () => {
   /*
-   * Twelve refusal codes is a lot of ways to say no, and a tool that refuses
+   * Twenty-two refusal codes is a lot of ways to say no, and a tool that refuses
    * ordinary calendars is no use. These are the forms Google, Outlook and
    * Apple actually write, quirks included: empty DESCRIPTION and LOCATION,
    * X-MICROSOFT-* and X-APPLE-* properties, LANGUAGE parameters, an alarm with
@@ -309,7 +309,7 @@ test('a time zone the calendar defines itself is honoured', () => {
 
 test('ordinary human schedules are never refused', () => {
   /*
-   * Twenty-one refusal codes is a lot of ways to say no, and the newest of
+   * Twenty-two refusal codes is a lot of ways to say no, and the newest of
    * them — refusing an occurrence that lands on a clock change — is the kind
    * that could quietly start blocking normal calendars. This is the guard
    * against that: five zones that observe daylight saving (and one that does
