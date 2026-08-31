@@ -20,7 +20,7 @@ import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const LIVE_URL = 'https://skaiea13-ai.github.io/seriessafe/';
+const LIVE_URL = 'https://hyunsikparker.github.io/seriessafe/';
 const TMP_ROOT = '/tmp';
 const OUTPUT = resolve(process.argv[2] ?? join(TMP_ROOT, 'SeriesSafe-WebMCP-Demo.mp4'));
 const WIDTH = 1440;

@@ -418,7 +418,7 @@ export function render(): void {
       </div>
     </div>
     <p class="footnote">Runs entirely in your browser. Nothing is uploaded. ·
-      <a href="https://github.com/skaiea13-ai/seriessafe">Source</a></p>
+      <a href="https://github.com/HyunsikParker/seriessafe">Source</a></p>
   `;
 
   if (activeId) {

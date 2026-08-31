@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const URLX = process.argv[2] ?? 'https://skaiea13-ai.github.io/seriessafe/';
+const URLX = process.argv[2] ?? 'https://hyunsikparker.github.io/seriessafe/';
 const OUT = process.argv[3] ?? 'webmcp-connected.png';
 const SCHEME = process.argv[4] ?? 'dark';
 const PORT = 9336;

@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const URL_UNDER_TEST = process.argv[2] ?? 'https://skaiea13-ai.github.io/seriessafe/';
+const URL_UNDER_TEST = process.argv[2] ?? 'https://hyunsikparker.github.io/seriessafe/';
 const PORT = Number(process.env.CDP_PORT ?? 9333);
 const CHROME =
   process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
